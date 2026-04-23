@@ -28,7 +28,16 @@ public class SFXLabLayerPanel : MonoBehaviour
         return result;
     }
 
-    public bool Enabled => EnableToggle != null && EnableToggle.isOn;
+    public bool Enabled
+    {
+        get
+        {
+            if (EnableToggle != null) return EnableToggle.isOn;
+            // Flat-slider UI has no per-layer toggle — infer "this layer is in
+            // use" from its intensity slider. FieldOrder[0] is always intensity.
+            return fields.Length > 0 && (float)fields[0].GetValue(current) > 0.0001f;
+        }
+    }
 
     public void Setup(WaveLayer layer)
     {

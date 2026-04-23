@@ -120,7 +120,11 @@ public class SFXLabController : MonoBehaviour
     {
         var asset = Resources.Load<TMP_FontAsset>("Fonts & Materials/LiberationSans SDF");
         if (asset != null) return asset;
-        return TMP_Settings.defaultFontAsset; // null if TMP Essentials wasn't imported
+        // TMP_Settings.defaultFontAsset throws NullReferenceException (not returns null)
+        // when TMP Essentials hasn't been imported, because the TMP_Settings singleton
+        // itself is missing from Resources.
+        try { return TMP_Settings.defaultFontAsset; }
+        catch (NullReferenceException) { return null; }
     }
 
     // ================================================================
@@ -158,10 +162,20 @@ public class SFXLabController : MonoBehaviour
         var scaler = canvasGO.GetComponent<CanvasScaler>();
         scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
         scaler.referenceResolution = new Vector2(1080, 1920);
-        scaler.matchWidthOrHeight = 0f;
+        // 0.5 (log-mean) keeps the portrait layout readable on landscape desktop
+        // screens — matchWidth=0 scaled everything ~1.78× on 1920×1080, blowing
+        // widgets out of their min-width budgets and overflowing button text.
+        scaler.matchWidthOrHeight = 0.5f;
 
         var rootGO = MakeRect("Root", canvasGO.transform);
-        AnchorFill(rootGO.GetComponent<RectTransform>());
+        // Centered max-width column — HTML `max-width: 960px; margin: 0 auto` style.
+        // Prevents slider rows from stretching the full width of a 1920-wide desktop.
+        var rootRT = rootGO.GetComponent<RectTransform>();
+        rootRT.anchorMin = new Vector2(0.5f, 0);
+        rootRT.anchorMax = new Vector2(0.5f, 1);
+        rootRT.pivot = new Vector2(0.5f, 0.5f);
+        rootRT.sizeDelta = new Vector2(960, 0);
+        rootRT.anchoredPosition = Vector2.zero;
         var rootVLG = rootGO.AddComponent<VerticalLayoutGroup>();
         rootVLG.spacing = 0f;
         rootVLG.padding = new RectOffset(0, 0, 0, 0);
@@ -199,8 +213,8 @@ public class SFXLabController : MonoBehaviour
         contentRT.pivot = new Vector2(0.5f, 1);
         contentRT.sizeDelta = Vector2.zero;
         var vlg = contentGO.AddComponent<VerticalLayoutGroup>();
-        vlg.padding = new RectOffset(24, 24, 24, 24);
-        vlg.spacing = 14f;
+        vlg.padding = new RectOffset(16, 16, 16, 16);
+        vlg.spacing = 6f;
         vlg.childControlWidth = true;
         vlg.childForceExpandWidth = true;
         vlg.childControlHeight = false;
@@ -215,36 +229,38 @@ public class SFXLabController : MonoBehaviour
     void BuildBottomBar(Transform root)
     {
         var barGO = MakeRect("BottomBar", root);
-        LayoutElem(barGO, minHeight: 200f);
+        LayoutElem(barGO, minHeight: 56f);
         var barBg = barGO.AddComponent<Image>();
         barBg.sprite = whiteSprite;
         barBg.color = ColorPanelHeader;
 
         var hlg = barGO.AddComponent<HorizontalLayoutGroup>();
-        hlg.padding = new RectOffset(20, 20, 16, 24);
-        hlg.spacing = 14f;
-        hlg.childControlWidth = false;
+        hlg.padding = new RectOffset(12, 12, 6, 6);
+        hlg.spacing = 8f;
+        hlg.childControlWidth = true;
         hlg.childControlHeight = true;
+        // No flex on children → controls sit at their min widths, clustered in
+        // the middle of the bar instead of Play bloating to fill the row.
         hlg.childForceExpandWidth = false;
         hlg.childForceExpandHeight = true;
         hlg.childAlignment = TextAnchor.MiddleCenter;
 
-        var playBtn = BuildButton(barGO.transform, "▶ PLAY", 56, ColorAccent);
-        LayoutElem(playBtn.gameObject, flexibleWidth: 1f, minHeight: 140f);
+        var playBtn = BuildButton(barGO.transform, "▶ PLAY", 20, ColorAccent);
+        LayoutElem(playBtn.gameObject, minWidth: 160f, minHeight: 44f);
         playBtn.onClick.AddListener(Play);
 
-        loopToggle = BuildToggle(barGO.transform, "", sizePx: 130);
-        LayoutElem(loopToggle.gameObject, minWidth: 130f, minHeight: 140f);
+        loopToggle = BuildToggle(barGO.transform, "", sizePx: 36);
+        LayoutElem(loopToggle.gameObject, minWidth: 44f, minHeight: 44f);
         StyleLoopToggle(loopToggle);
 
-        var stopBtn = BuildButton(barGO.transform, "■", 56, ColorDanger);
-        LayoutElem(stopBtn.gameObject, minWidth: 140f, minHeight: 140f);
+        var stopBtn = BuildButton(barGO.transform, "■ STOP", 18, ColorDanger);
+        LayoutElem(stopBtn.gameObject, minWidth: 120f, minHeight: 44f);
         stopBtn.onClick.AddListener(Stop);
     }
 
     void StyleLoopToggle(Toggle t)
     {
-        var glyph = Label(t.transform, "↺", 56, TextAlignmentOptions.Center);
+        var glyph = Label(t.transform, "↺", 22, TextAlignmentOptions.Center);
         var rt = glyph.rectTransform;
         rt.anchorMin = Vector2.zero;
         rt.anchorMax = Vector2.one;
@@ -262,75 +278,75 @@ public class SFXLabController : MonoBehaviour
         SectionHeader(parent, "Presets");
 
         presetDropdown = BuildDropdown(parent, presetKeys);
-        LayoutElem(presetDropdown.gameObject, minHeight: 100f);
+        LayoutElem(presetDropdown.gameObject, minHeight: 54f);
         presetDropdown.onValueChanged.AddListener(_ => UpdateDeleteButtonState());
 
         {
-            var row = HorizontalRow(parent, 80f);
-            variationLabel = Label(row, "Variation: 0", 28);
-            LayoutElem(variationLabel.gameObject, minWidth: 300f);
+            var row = HorizontalRow(parent, 48f);
+            variationLabel = Label(row, "Variation: 0", 20);
+            LayoutElem(variationLabel.gameObject, minWidth: 180f);
             variationSlider = BuildSlider(row, 0, 24, 0, whole: true);
-            LayoutElem(variationSlider.gameObject, flexibleWidth: 1f, minHeight: 70f);
+            LayoutElem(variationSlider.gameObject, flexibleWidth: 1f, minHeight: 40f);
         }
 
         {
-            var row = HorizontalRow(parent, 110f);
-            var loadBtn = BuildButton(row, "Load Preset", 38, ColorAccentDim);
-            LayoutElem(loadBtn.gameObject, flexibleWidth: 2f, minHeight: 110f);
+            var row = HorizontalRow(parent, 56f);
+            var loadBtn = BuildButton(row, "Load Preset", 22, ColorAccentDim);
+            LayoutElem(loadBtn.gameObject, flexibleWidth: 2f, minWidth: 180f, minHeight: 56f);
             loadBtn.onClick.AddListener(LoadPreset);
-            deleteButton = BuildButton(row, "Delete", 32, ColorDanger);
-            LayoutElem(deleteButton.gameObject, flexibleWidth: 1f, minHeight: 110f);
+            deleteButton = BuildButton(row, "Delete", 20, ColorDanger);
+            LayoutElem(deleteButton.gameObject, flexibleWidth: 1f, minWidth: 120f, minHeight: 56f);
             deleteButton.onClick.AddListener(DeleteSelectedPreset);
         }
         UpdateDeleteButtonState();
 
-        Spacer(parent, 20f);
+        Spacer(parent, 10f);
         SectionHeader(parent, "Playback");
 
         {
-            var row = HorizontalRow(parent, 80f);
-            loopIntervalLabel = Label(row, "Loop: 0.50s", 28);
-            LayoutElem(loopIntervalLabel.gameObject, minWidth: 300f);
+            var row = HorizontalRow(parent, 48f);
+            loopIntervalLabel = Label(row, "Loop: 0.50s", 20);
+            LayoutElem(loopIntervalLabel.gameObject, minWidth: 180f);
             loopIntervalSlider = BuildSlider(row, 0.05f, 2f, 0.5f);
-            LayoutElem(loopIntervalSlider.gameObject, flexibleWidth: 1f, minHeight: 70f);
+            LayoutElem(loopIntervalSlider.gameObject, flexibleWidth: 1f, minHeight: 40f);
         }
 
-        Spacer(parent, 20f);
+        Spacer(parent, 10f);
         SectionHeader(parent, "Export");
 
         {
-            var row = HorizontalRow(parent, 80f);
-            var folderLabel = Label(row, "Folder:", 28);
-            LayoutElem(folderLabel.gameObject, minWidth: 180f);
+            var row = HorizontalRow(parent, 52f);
+            var folderLabel = Label(row, "Folder:", 20);
+            LayoutElem(folderLabel.gameObject, minWidth: 100f);
             outputFolderField = BuildInputField(row, Application.persistentDataPath);
-            LayoutElem(outputFolderField.gameObject, flexibleWidth: 1f, minHeight: 80f);
+            LayoutElem(outputFolderField.gameObject, flexibleWidth: 1f, minHeight: 52f);
         }
 
         {
-            var row = HorizontalRow(parent, 110f);
-            var exportBtn = BuildButton(row, "Export", 36, ColorAccentDim);
-            LayoutElem(exportBtn.gameObject, flexibleWidth: 2f, minHeight: 110f);
+            var row = HorizontalRow(parent, 56f);
+            var exportBtn = BuildButton(row, "Export", 22, ColorAccentDim);
+            LayoutElem(exportBtn.gameObject, flexibleWidth: 2f, minWidth: 180f, minHeight: 56f);
             exportBtn.onClick.AddListener(Export);
-            var clearBtn = BuildButton(row, "Clear", 36, ColorWidget);
-            LayoutElem(clearBtn.gameObject, flexibleWidth: 1f, minHeight: 110f);
+            var clearBtn = BuildButton(row, "Clear", 20, ColorWidget);
+            LayoutElem(clearBtn.gameObject, flexibleWidth: 1f, minWidth: 120f, minHeight: 56f);
             clearBtn.onClick.AddListener(Clear);
         }
 
         {
-            var row = HorizontalRow(parent, 90f);
+            var row = HorizontalRow(parent, 52f);
             presetNameField = BuildInputField(row, "");
-            LayoutElem(presetNameField.gameObject, flexibleWidth: 2f, minHeight: 90f);
+            LayoutElem(presetNameField.gameObject, flexibleWidth: 2f, minHeight: 52f);
             var ph = presetNameField.placeholder as TMP_Text;
             if (ph != null) ph.text = "Preset name...";
-            var saveBtn = BuildButton(row, "Save", 32, ColorAccentDim);
-            LayoutElem(saveBtn.gameObject, flexibleWidth: 1f, minHeight: 90f);
+            var saveBtn = BuildButton(row, "Save", 20, ColorAccentDim);
+            LayoutElem(saveBtn.gameObject, flexibleWidth: 1f, minWidth: 120f, minHeight: 52f);
             saveBtn.onClick.AddListener(SaveCurrentAsPreset);
         }
 
-        statusText = Label(parent, "Ready", 24);
-        LayoutElem(statusText.gameObject, minHeight: 50f);
+        statusText = Label(parent, "Ready", 18);
+        LayoutElem(statusText.gameObject, minHeight: 28f);
 
-        Spacer(parent, 30f);
+        Spacer(parent, 14f);
         SectionHeader(parent, "Layers");
     }
 
@@ -342,176 +358,50 @@ public class SFXLabController : MonoBehaviour
     {
         var list = new List<SFXLabLayerPanel>();
         foreach (WaveLayer layer in Enum.GetValues(typeof(WaveLayer)))
-            list.Add(BuildLayerPanel(parent, layer));
+            list.Add(BuildFlatLayerSliders(parent, layer));
         panels = list.ToArray();
     }
 
-    SFXLabLayerPanel BuildLayerPanel(Transform parent, WaveLayer layer)
+    // Flat layout: every slider for every layer lives directly in the scroll
+    // content, one after another, each row labeled "<Layer>: <param>". No
+    // panel, no toggle, no collapse — just rows. We still need an
+    // SFXLabLayerPanel MonoBehaviour per layer so the controller's Play/Clear/
+    // LoadPreset logic keeps working; it rides on a zero-sized stub object.
+    SFXLabLayerPanel BuildFlatLayerSliders(Transform parent, WaveLayer layer)
     {
-        var panelGO = MakeRect($"Layer_{layer}", parent);
-        var img = panelGO.AddComponent<Image>();
-        StyleBg(img, ColorPanel, Rounding.Large);
-        var vlg = panelGO.AddComponent<VerticalLayoutGroup>();
-        vlg.padding = new RectOffset(14, 14, 8, 14);
-        vlg.spacing = 6f;
-        vlg.childControlWidth = true;
-        vlg.childForceExpandWidth = true;
-        vlg.childControlHeight = false;
-        vlg.childForceExpandHeight = false;
-        panelGO.AddComponent<ContentSizeFitter>().verticalFit = ContentSizeFitter.FitMode.PreferredSize;
-
-        // Header row: [Toggle] [layer name + arrow — clickable Button covers the rest]
-        var header = HorizontalRow(panelGO.transform, 100f);
-        var toggle = BuildToggle(header, "", sizePx: 80);
-        LayoutElem(toggle.gameObject, minWidth: 100f, minHeight: 100f);
-
-        var collapseBtnGO = new GameObject("CollapseButton", typeof(RectTransform), typeof(Image), typeof(Button));
-        collapseBtnGO.transform.SetParent(header, false);
-        LayoutElem(collapseBtnGO, flexibleWidth: 1f, minHeight: 100f);
-        var cbImg = collapseBtnGO.GetComponent<Image>();
-        cbImg.sprite = whiteSprite;
-        cbImg.color = ColorPanel;
-        var cbBtn = collapseBtnGO.GetComponent<Button>();
-        cbBtn.targetGraphic = cbImg;
-
-        var layerLabel = Label(collapseBtnGO.transform, layer.ToString(), 44, TextAlignmentOptions.MidlineLeft, FontStyles.Bold);
-        var llrt = layerLabel.rectTransform;
-        llrt.anchorMin = new Vector2(0, 0);
-        llrt.anchorMax = new Vector2(1, 1);
-        llrt.offsetMin = new Vector2(8, 0);
-        llrt.offsetMax = new Vector2(-60, 0);
-        layerLabel.raycastTarget = false;
-
-        var panelArrow = Label(collapseBtnGO.transform, "▸", 44, TextAlignmentOptions.MidlineRight);
-        var part = panelArrow.rectTransform;
-        part.anchorMin = new Vector2(1, 0);
-        part.anchorMax = new Vector2(1, 1);
-        part.pivot = new Vector2(1, 0.5f);
-        part.anchoredPosition = new Vector2(-6, 0);
-        part.sizeDelta = new Vector2(60, 0);
-        panelArrow.raycastTarget = false;
-
-        // Panel content — the collapsible body
-        var panelContentGO = MakeRect("PanelContent", panelGO.transform);
-        var pcvlg = panelContentGO.AddComponent<VerticalLayoutGroup>();
-        pcvlg.padding = new RectOffset(0, 0, 6, 0);
-        pcvlg.spacing = 6f;
-        pcvlg.childControlWidth = true;
-        pcvlg.childForceExpandWidth = true;
-        pcvlg.childControlHeight = false;
-        pcvlg.childForceExpandHeight = false;
-
-        var panelCollapsible = panelGO.AddComponent<SFXLabCollapsible>();
-        panelCollapsible.Init(panelContentGO, panelArrow, cbBtn, initiallyCollapsed: true);
-
-        // Category sub-groups
-        var categoryCollapsibles = new SFXLabCollapsible[CategoryColors.Length];
         var sliders = new SFXLabSlider[SFXLabParamRanges.FieldOrder.Length];
-
-        foreach (SFXLabParamRanges.Category cat in Enum.GetValues(typeof(SFXLabParamRanges.Category)))
+        for (int i = 0; i < SFXLabParamRanges.FieldEntries.Length; i++)
         {
-            var c = BuildCategoryGroup(panelContentGO.transform, cat, sliders,
-                                       initiallyCollapsed: cat != SFXLabParamRanges.Category.Core);
-            categoryCollapsibles[(int)cat] = c;
+            var entry = SFXLabParamRanges.FieldEntries[i];
+            sliders[i] = BuildSliderRow(parent, entry.Name, $"{layer}: {entry.Name}");
         }
 
-        var panel = panelGO.AddComponent<SFXLabLayerPanel>();
+        var stubGO = new GameObject($"LayerStub_{layer}", typeof(RectTransform));
+        stubGO.transform.SetParent(parent, false);
+        stubGO.AddComponent<LayoutElement>().ignoreLayout = true;
+
+        var panel = stubGO.AddComponent<SFXLabLayerPanel>();
         panel.Layer = layer;
-        panel.LayerLabel = layerLabel;
-        panel.EnableToggle = toggle;
+        panel.LayerLabel = null;
+        panel.EnableToggle = null;
         panel.Sliders = sliders;
-        panel.PanelCollapsible = panelCollapsible;
-        panel.CategoryCollapsibles = categoryCollapsibles;
+        panel.PanelCollapsible = null;
+        panel.CategoryCollapsibles = Array.Empty<SFXLabCollapsible>();
         return panel;
     }
 
-    SFXLabCollapsible BuildCategoryGroup(
-        Transform parent,
-        SFXLabParamRanges.Category cat,
-        SFXLabSlider[] slidersOut,
-        bool initiallyCollapsed)
+    SFXLabSlider BuildSliderRow(Transform parent, string paramName, string labelText = null)
     {
-        var groupGO = MakeRect($"Cat_{cat}", parent);
-        var gvlg = groupGO.AddComponent<VerticalLayoutGroup>();
-        gvlg.padding = new RectOffset(0, 0, 0, 0);
-        gvlg.spacing = 2f;
-        gvlg.childControlWidth = true;
-        gvlg.childForceExpandWidth = true;
-        gvlg.childControlHeight = false;
-        gvlg.childForceExpandHeight = false;
-
-        // Header: [color bar][arrow][category name] — the whole row is a Button
-        var headerGO = new GameObject("CatHeader", typeof(RectTransform), typeof(Image), typeof(Button));
-        headerGO.transform.SetParent(groupGO.transform, false);
-        LayoutElem(headerGO, minHeight: 70f);
-        var headerImg = headerGO.GetComponent<Image>();
-        StyleBg(headerImg, ColorPanelHeader);
-        var headerBtn = headerGO.GetComponent<Button>();
-        headerBtn.targetGraphic = headerImg;
-
-        // Color bar anchored to the left edge
-        var barGO = MakeRect("ColorBar", headerGO.transform);
-        var brt = barGO.GetComponent<RectTransform>();
-        brt.anchorMin = new Vector2(0, 0);
-        brt.anchorMax = new Vector2(0, 1);
-        brt.pivot = new Vector2(0, 0.5f);
-        brt.sizeDelta = new Vector2(10f, 0);
-        brt.anchoredPosition = Vector2.zero;
-        var barImg = barGO.AddComponent<Image>();
-        barImg.sprite = whiteSprite;
-        barImg.color = CategoryColors[(int)cat];
-        barImg.raycastTarget = false;
-
-        var catArrow = Label(headerGO.transform, "▾", 32, TextAlignmentOptions.MidlineLeft);
-        var art = catArrow.rectTransform;
-        art.anchorMin = new Vector2(0, 0);
-        art.anchorMax = new Vector2(0, 1);
-        art.pivot = new Vector2(0, 0.5f);
-        art.sizeDelta = new Vector2(40, 0);
-        art.anchoredPosition = new Vector2(26, 0);
-        catArrow.raycastTarget = false;
-
-        var catName = Label(headerGO.transform, cat.ToString(), 30, TextAlignmentOptions.MidlineLeft, FontStyles.Bold);
-        var nrt = catName.rectTransform;
-        nrt.anchorMin = new Vector2(0, 0);
-        nrt.anchorMax = new Vector2(1, 1);
-        nrt.offsetMin = new Vector2(70, 0);
-        nrt.offsetMax = new Vector2(-8, 0);
-        catName.raycastTarget = false;
-
-        // Body: sliders for this category
-        var contentGO = MakeRect("CatContent", groupGO.transform);
-        var cvlg = contentGO.AddComponent<VerticalLayoutGroup>();
-        cvlg.padding = new RectOffset(14, 4, 6, 6);
-        cvlg.spacing = 4f;
-        cvlg.childControlWidth = true;
-        cvlg.childForceExpandWidth = true;
-        cvlg.childControlHeight = false;
-        cvlg.childForceExpandHeight = false;
-
-        for (int i = 0; i < SFXLabParamRanges.FieldEntries.Length; i++)
-        {
-            if (SFXLabParamRanges.FieldEntries[i].Category != cat) continue;
-            slidersOut[i] = BuildSliderRow(contentGO.transform, SFXLabParamRanges.FieldEntries[i].Name);
-        }
-
-        var collapsible = groupGO.AddComponent<SFXLabCollapsible>();
-        collapsible.Init(contentGO, catArrow, headerBtn, initiallyCollapsed);
-        return collapsible;
-    }
-
-    SFXLabSlider BuildSliderRow(Transform parent, string paramName)
-    {
-        var row = HorizontalRow(parent, 65f);
-        var label = Label(row, paramName, 24);
-        LayoutElem(label.gameObject, minWidth: 280f);
+        var row = HorizontalRow(parent, 40f);
+        var label = Label(row, labelText ?? paramName, 18);
+        LayoutElem(label.gameObject, minWidth: 230f);
 
         var range = SFXLabParamRanges.Ranges[paramName];
         var slider = BuildSlider(row, range.Min, range.Max, range.Default);
-        LayoutElem(slider.gameObject, flexibleWidth: 1f, minHeight: 55f);
+        LayoutElem(slider.gameObject, flexibleWidth: 1f, minHeight: 32f);
 
-        var valueText = Label(row, "0", 24, TextAlignmentOptions.MidlineRight);
-        LayoutElem(valueText.gameObject, minWidth: 130f);
+        var valueText = Label(row, "0", 18, TextAlignmentOptions.MidlineRight);
+        LayoutElem(valueText.gameObject, minWidth: 80f);
 
         var c = row.gameObject.AddComponent<SFXLabSlider>();
         c.Label = label;
@@ -627,9 +517,9 @@ public class SFXLabController : MonoBehaviour
 
     void SectionHeader(Transform parent, string text)
     {
-        var t = Label(parent, text, 44, TextAlignmentOptions.MidlineLeft, FontStyles.Bold);
+        var t = Label(parent, text, 26, TextAlignmentOptions.MidlineLeft, FontStyles.Bold);
         t.color = ColorAccent;
-        LayoutElem(t.gameObject, minHeight: 80f);
+        LayoutElem(t.gameObject, minHeight: 40f);
     }
 
     Transform HorizontalRow(Transform parent, float minHeight)
@@ -637,7 +527,10 @@ public class SFXLabController : MonoBehaviour
         var go = new GameObject("Row", typeof(RectTransform), typeof(HorizontalLayoutGroup));
         go.transform.SetParent(parent, false);
         var hlg = go.GetComponent<HorizontalLayoutGroup>();
-        hlg.childControlWidth = false;
+        // childControlWidth must be true for LayoutElement.minWidth / flexibleWidth to be
+        // honored. Without it, children keep their default RectTransform size (100 units) and
+        // buttons clip their text, sliders become un-draggable ribbons.
+        hlg.childControlWidth = true;
         hlg.childControlHeight = true;
         hlg.childForceExpandHeight = true;
         hlg.childForceExpandWidth = false;
@@ -672,7 +565,17 @@ public class SFXLabController : MonoBehaviour
         StyleBg(img, bgColor);
 
         var t = Label(go.transform, text, fontSize, TextAlignmentOptions.Center, FontStyles.Bold);
-        AnchorFill(t.rectTransform);
+        var trt = t.rectTransform;
+        trt.anchorMin = Vector2.zero;
+        trt.anchorMax = Vector2.one;
+        // Inset the label so text can't touch the rounded corners, and let TMP
+        // shrink the font if the button is narrower than the text needs.
+        trt.offsetMin = new Vector2(14, 6);
+        trt.offsetMax = new Vector2(-14, -6);
+        t.enableAutoSizing = true;
+        t.fontSizeMin = Mathf.Max(14f, fontSize * 0.55f);
+        t.fontSizeMax = fontSize;
+        t.overflowMode = TextOverflowModes.Ellipsis;
         t.raycastTarget = false;
 
         var btn = go.GetComponent<Button>();
@@ -693,10 +596,11 @@ public class SFXLabController : MonoBehaviour
 
         var fillArea = MakeRect("FillArea", go.transform);
         var far = fillArea.GetComponent<RectTransform>();
-        far.anchorMin = new Vector2(0, 0.4f);
-        far.anchorMax = new Vector2(1, 0.6f);
-        far.offsetMin = new Vector2(15, 0);
-        far.offsetMax = new Vector2(-40, 0);
+        // Thicker track (40% of slider height) so it reads as a real bar, not a hairline.
+        far.anchorMin = new Vector2(0, 0.3f);
+        far.anchorMax = new Vector2(1, 0.7f);
+        far.offsetMin = new Vector2(22, 0);
+        far.offsetMax = new Vector2(-22, 0);
 
         var fillGO = MakeRect("Fill", fillArea.transform);
         var fillRT = fillGO.GetComponent<RectTransform>();
@@ -709,14 +613,16 @@ public class SFXLabController : MonoBehaviour
         var hart = handleArea.GetComponent<RectTransform>();
         hart.anchorMin = Vector2.zero;
         hart.anchorMax = Vector2.one;
-        hart.offsetMin = new Vector2(25, 0);
-        hart.offsetMax = new Vector2(-25, 0);
+        hart.offsetMin = new Vector2(22, 0);
+        hart.offsetMax = new Vector2(-22, 0);
 
         var handleGO = MakeRect("Handle", handleArea.transform);
         var handleRT = handleGO.GetComponent<RectTransform>();
         handleRT.anchorMin = new Vector2(0, 0);
         handleRT.anchorMax = new Vector2(0, 1);
-        handleRT.sizeDelta = new Vector2(55, 10);
+        // Handle protrudes 5px above/below the track for a comfortable grab zone
+        // without blowing out the row spacing.
+        handleRT.sizeDelta = new Vector2(28, 10);
         var handleImg = handleGO.AddComponent<Image>();
         StyleBg(handleImg, Color.white);
 
@@ -784,7 +690,7 @@ public class SFXLabController : MonoBehaviour
         foreach (var t in ddGO.GetComponentsInChildren<TMP_Text>(includeInactive: true))
         {
             if (uiFont != null) t.font = uiFont;
-            t.fontSize = 30;
+            t.fontSize = 20;
             t.color = ColorText;
         }
         var template = ddGO.transform.Find("Template");
@@ -797,9 +703,9 @@ public class SFXLabController : MonoBehaviour
             var itemCheck = template.Find("Viewport/Content/Item/Item Checkmark");
             if (itemCheck != null) itemCheck.GetComponent<Image>().color = ColorAccent;
             var tr = template.GetComponent<RectTransform>();
-            if (tr != null) tr.sizeDelta = new Vector2(tr.sizeDelta.x, 500f);
+            if (tr != null) tr.sizeDelta = new Vector2(tr.sizeDelta.x, 320f);
             var item = template.Find("Viewport/Content/Item");
-            if (item != null) item.GetComponent<RectTransform>().sizeDelta = new Vector2(0, 90);
+            if (item != null) item.GetComponent<RectTransform>().sizeDelta = new Vector2(0, 48);
         }
 
         var dd = ddGO.GetComponent<TMP_Dropdown>();
@@ -819,7 +725,7 @@ public class SFXLabController : MonoBehaviour
         foreach (var t in fieldGO.GetComponentsInChildren<TMP_Text>(includeInactive: true))
         {
             if (uiFont != null) t.font = uiFont;
-            t.fontSize = 26;
+            t.fontSize = 18;
             t.color = t.gameObject.name.Contains("Placeholder") ? ColorPlaceholder : ColorText;
         }
 
