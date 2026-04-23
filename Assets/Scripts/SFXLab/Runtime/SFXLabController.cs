@@ -1,0 +1,1100 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text;
+using TMPro;
+using UnityEngine;
+using UnityEngine.EventSystems;
+using UnityEngine.UI;
+#if ENABLE_INPUT_SYSTEM
+using UnityEngine.InputSystem.UI;
+#endif
+
+public class SFXLabController : MonoBehaviour
+{
+    // ===== Theme =====
+    static readonly Color ColorBg          = new(0.07f, 0.07f, 0.09f, 1f);
+    static readonly Color ColorPanel       = new(0.14f, 0.14f, 0.18f, 1f);
+    static readonly Color ColorPanelHeader = new(0.18f, 0.18f, 0.22f, 1f);
+    static readonly Color ColorWidget      = new(0.22f, 0.22f, 0.28f, 1f);
+    static readonly Color ColorAccent      = new(0.34f, 0.68f, 0.96f, 1f);
+    static readonly Color ColorAccentDim   = new(0.24f, 0.48f, 0.70f, 1f);
+    static readonly Color ColorDanger      = new(0.90f, 0.35f, 0.35f, 1f);
+    static readonly Color ColorText        = Color.white;
+    static readonly Color ColorPlaceholder = new(1f, 1f, 1f, 0.4f);
+
+    static readonly Color[] CategoryColors =
+    {
+        new(0.34f, 0.68f, 0.96f, 1f), // Core       — cyan
+        new(0.86f, 0.40f, 0.86f, 1f), // Modulation — magenta
+        new(0.96f, 0.68f, 0.28f, 1f), // Timbre     — amber
+        new(0.40f, 0.86f, 0.50f, 1f), // Variance   — green
+    };
+
+    // ===== Runtime state =====
+    Dictionary<string, (WaveLayer, WaveEnvelope)[][]> presets;
+    Dictionary<string, (WaveLayer, WaveEnvelope)[]> userPresets; // raw names (no prefix)
+    List<string> presetKeys;
+    float loopTimer;
+
+    const string UserPrefix = "★ ";
+    const string UserPrefsKey = "SFXLab.UserPresets";
+
+    SFXLabLayerPanel[] panels;
+    TMP_Dropdown presetDropdown;
+    Slider variationSlider;
+    TMP_Text variationLabel;
+    Toggle loopToggle;
+    Slider loopIntervalSlider;
+    TMP_Text loopIntervalLabel;
+    TMP_InputField outputFolderField;
+    TMP_InputField presetNameField;
+    Button deleteButton;
+    TMP_Text statusText;
+
+    Sprite whiteSprite;
+    Sprite roundedLargeSprite; // panels / bars: more visible radius
+    Sprite roundedSmallSprite; // buttons / toggles / sliders: tighter radius
+    TMP_FontAsset uiFont;
+    TMP_DefaultControls.Resources uiResources;
+
+    // Tune aesthetics here. First value is the source texture size; second is the corner radius
+    // in native pixels. With 9-slice rendering, the corner stays that many pixels at any widget
+    // size — so raise/lower these to make the whole UI feel more/less rounded.
+    const int LargeSpriteSize   = 80;
+    const int LargeCornerRadius = 22;
+    const int SmallSpriteSize   = 48;
+    const int SmallCornerRadius = 12;
+
+    void Awake()
+    {
+        whiteSprite = CreateWhiteSprite();
+        roundedLargeSprite = CreateRoundedSprite(LargeSpriteSize, LargeCornerRadius);
+        roundedSmallSprite = CreateRoundedSprite(SmallSpriteSize, SmallCornerRadius);
+        uiFont = LoadDefaultTMPFont();
+        if (uiFont == null)
+        {
+            Debug.LogError("[SFXLab] No TMP font asset found. Open Window → TextMeshPro → Import TMP Essential Resources and re-enter Play mode.");
+        }
+        uiResources = new TMP_DefaultControls.Resources
+        {
+            standard = whiteSprite, background = whiteSprite, inputField = whiteSprite,
+            knob = whiteSprite, checkmark = whiteSprite, dropdown = whiteSprite, mask = whiteSprite,
+        };
+
+        EnsureEventSystem();
+        EnsureAudio();
+
+        presets = SFXExamples.GetExamples();
+        userPresets = new Dictionary<string, (WaveLayer, WaveEnvelope)[]>();
+        LoadUserPresets();
+        RebuildPresetKeys();
+
+        BuildUI();
+
+        foreach (var p in panels) p.Setup(p.Layer);
+
+        variationSlider.onValueChanged.AddListener(v => variationLabel.text = $"Variation: {(int)v}");
+        loopIntervalSlider.onValueChanged.AddListener(v => loopIntervalLabel.text = $"Loop: {v:0.00}s");
+    }
+
+    void Update()
+    {
+        if (loopToggle != null && loopToggle.isOn)
+        {
+            loopTimer -= Time.deltaTime;
+            if (loopTimer <= 0f)
+            {
+                Play();
+                loopTimer = loopIntervalSlider.value;
+            }
+        }
+        else
+        {
+            loopTimer = 0f;
+        }
+    }
+
+    static TMP_FontAsset LoadDefaultTMPFont()
+    {
+        var asset = Resources.Load<TMP_FontAsset>("Fonts & Materials/LiberationSans SDF");
+        if (asset != null) return asset;
+        return TMP_Settings.defaultFontAsset; // null if TMP Essentials wasn't imported
+    }
+
+    // ================================================================
+    // Infrastructure
+    // ================================================================
+
+    void EnsureEventSystem()
+    {
+        if (FindFirstObjectByType<EventSystem>() != null) return;
+        var go = new GameObject("EventSystem", typeof(EventSystem));
+#if ENABLE_INPUT_SYSTEM
+        go.AddComponent<InputSystemUIInputModule>();
+#else
+        go.AddComponent<StandaloneInputModule>();
+#endif
+    }
+
+    void EnsureAudio()
+    {
+        if (FindFirstObjectByType<AudioListener>() == null)
+            new GameObject("AudioListener", typeof(AudioListener));
+        _ = SFXManager.Instance;
+    }
+
+    // ================================================================
+    // Top-level UI: Canvas → Root (VLG) → [Scroll, BottomBar]
+    // ================================================================
+
+    void BuildUI()
+    {
+        var canvasGO = new GameObject("SFXLabCanvas", typeof(Canvas), typeof(CanvasScaler), typeof(GraphicRaycaster));
+        canvasGO.transform.SetParent(transform, false);
+        var canvas = canvasGO.GetComponent<Canvas>();
+        canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+        var scaler = canvasGO.GetComponent<CanvasScaler>();
+        scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+        scaler.referenceResolution = new Vector2(1080, 1920);
+        scaler.matchWidthOrHeight = 0f;
+
+        var rootGO = MakeRect("Root", canvasGO.transform);
+        AnchorFill(rootGO.GetComponent<RectTransform>());
+        var rootVLG = rootGO.AddComponent<VerticalLayoutGroup>();
+        rootVLG.spacing = 0f;
+        rootVLG.padding = new RectOffset(0, 0, 0, 0);
+        rootVLG.childControlWidth = true;
+        rootVLG.childForceExpandWidth = true;
+        rootVLG.childControlHeight = true;
+        rootVLG.childForceExpandHeight = false;
+
+        BuildScrollArea(rootGO.transform);
+        BuildBottomBar(rootGO.transform);
+    }
+
+    void BuildScrollArea(Transform root)
+    {
+        var scrollGO = MakeRect("Scroll", root);
+        LayoutElem(scrollGO, flexibleHeight: 1f, minHeight: 400f);
+        var scrollBg = scrollGO.AddComponent<Image>();
+        scrollBg.sprite = whiteSprite;
+        scrollBg.color = ColorBg;
+        var scrollRect = scrollGO.AddComponent<ScrollRect>();
+        scrollRect.horizontal = false;
+        scrollRect.vertical = true;
+        scrollRect.scrollSensitivity = 40f;
+        scrollRect.movementType = ScrollRect.MovementType.Elastic;
+
+        var viewportGO = MakeRect("Viewport", scrollGO.transform);
+        AnchorFill(viewportGO.GetComponent<RectTransform>());
+        viewportGO.AddComponent<RectMask2D>();
+        scrollRect.viewport = viewportGO.GetComponent<RectTransform>();
+
+        var contentGO = MakeRect("Content", viewportGO.transform);
+        var contentRT = contentGO.GetComponent<RectTransform>();
+        contentRT.anchorMin = new Vector2(0, 1);
+        contentRT.anchorMax = new Vector2(1, 1);
+        contentRT.pivot = new Vector2(0.5f, 1);
+        contentRT.sizeDelta = Vector2.zero;
+        var vlg = contentGO.AddComponent<VerticalLayoutGroup>();
+        vlg.padding = new RectOffset(24, 24, 24, 24);
+        vlg.spacing = 14f;
+        vlg.childControlWidth = true;
+        vlg.childForceExpandWidth = true;
+        vlg.childControlHeight = false;
+        vlg.childForceExpandHeight = false;
+        contentGO.AddComponent<ContentSizeFitter>().verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+        scrollRect.content = contentRT;
+
+        BuildControls(contentGO.transform);
+        BuildLayerPanels(contentGO.transform);
+    }
+
+    void BuildBottomBar(Transform root)
+    {
+        var barGO = MakeRect("BottomBar", root);
+        LayoutElem(barGO, minHeight: 200f);
+        var barBg = barGO.AddComponent<Image>();
+        barBg.sprite = whiteSprite;
+        barBg.color = ColorPanelHeader;
+
+        var hlg = barGO.AddComponent<HorizontalLayoutGroup>();
+        hlg.padding = new RectOffset(20, 20, 16, 24);
+        hlg.spacing = 14f;
+        hlg.childControlWidth = false;
+        hlg.childControlHeight = true;
+        hlg.childForceExpandWidth = false;
+        hlg.childForceExpandHeight = true;
+        hlg.childAlignment = TextAnchor.MiddleCenter;
+
+        var playBtn = BuildButton(barGO.transform, "▶ PLAY", 56, ColorAccent);
+        LayoutElem(playBtn.gameObject, flexibleWidth: 1f, minHeight: 140f);
+        playBtn.onClick.AddListener(Play);
+
+        loopToggle = BuildToggle(barGO.transform, "", sizePx: 130);
+        LayoutElem(loopToggle.gameObject, minWidth: 130f, minHeight: 140f);
+        StyleLoopToggle(loopToggle);
+
+        var stopBtn = BuildButton(barGO.transform, "■", 56, ColorDanger);
+        LayoutElem(stopBtn.gameObject, minWidth: 140f, minHeight: 140f);
+        stopBtn.onClick.AddListener(Stop);
+    }
+
+    void StyleLoopToggle(Toggle t)
+    {
+        var glyph = Label(t.transform, "↺", 56, TextAlignmentOptions.Center);
+        var rt = glyph.rectTransform;
+        rt.anchorMin = Vector2.zero;
+        rt.anchorMax = Vector2.one;
+        rt.offsetMin = Vector2.zero;
+        rt.offsetMax = Vector2.zero;
+        glyph.raycastTarget = false;
+    }
+
+    // ================================================================
+    // Scrollable content sections
+    // ================================================================
+
+    void BuildControls(Transform parent)
+    {
+        SectionHeader(parent, "Presets");
+
+        presetDropdown = BuildDropdown(parent, presetKeys);
+        LayoutElem(presetDropdown.gameObject, minHeight: 100f);
+        presetDropdown.onValueChanged.AddListener(_ => UpdateDeleteButtonState());
+
+        {
+            var row = HorizontalRow(parent, 80f);
+            variationLabel = Label(row, "Variation: 0", 28);
+            LayoutElem(variationLabel.gameObject, minWidth: 300f);
+            variationSlider = BuildSlider(row, 0, 24, 0, whole: true);
+            LayoutElem(variationSlider.gameObject, flexibleWidth: 1f, minHeight: 70f);
+        }
+
+        {
+            var row = HorizontalRow(parent, 110f);
+            var loadBtn = BuildButton(row, "Load Preset", 38, ColorAccentDim);
+            LayoutElem(loadBtn.gameObject, flexibleWidth: 2f, minHeight: 110f);
+            loadBtn.onClick.AddListener(LoadPreset);
+            deleteButton = BuildButton(row, "Delete", 32, ColorDanger);
+            LayoutElem(deleteButton.gameObject, flexibleWidth: 1f, minHeight: 110f);
+            deleteButton.onClick.AddListener(DeleteSelectedPreset);
+        }
+        UpdateDeleteButtonState();
+
+        Spacer(parent, 20f);
+        SectionHeader(parent, "Playback");
+
+        {
+            var row = HorizontalRow(parent, 80f);
+            loopIntervalLabel = Label(row, "Loop: 0.50s", 28);
+            LayoutElem(loopIntervalLabel.gameObject, minWidth: 300f);
+            loopIntervalSlider = BuildSlider(row, 0.05f, 2f, 0.5f);
+            LayoutElem(loopIntervalSlider.gameObject, flexibleWidth: 1f, minHeight: 70f);
+        }
+
+        Spacer(parent, 20f);
+        SectionHeader(parent, "Export");
+
+        {
+            var row = HorizontalRow(parent, 80f);
+            var folderLabel = Label(row, "Folder:", 28);
+            LayoutElem(folderLabel.gameObject, minWidth: 180f);
+            outputFolderField = BuildInputField(row, Application.persistentDataPath);
+            LayoutElem(outputFolderField.gameObject, flexibleWidth: 1f, minHeight: 80f);
+        }
+
+        {
+            var row = HorizontalRow(parent, 110f);
+            var exportBtn = BuildButton(row, "Export", 36, ColorAccentDim);
+            LayoutElem(exportBtn.gameObject, flexibleWidth: 2f, minHeight: 110f);
+            exportBtn.onClick.AddListener(Export);
+            var clearBtn = BuildButton(row, "Clear", 36, ColorWidget);
+            LayoutElem(clearBtn.gameObject, flexibleWidth: 1f, minHeight: 110f);
+            clearBtn.onClick.AddListener(Clear);
+        }
+
+        {
+            var row = HorizontalRow(parent, 90f);
+            presetNameField = BuildInputField(row, "");
+            LayoutElem(presetNameField.gameObject, flexibleWidth: 2f, minHeight: 90f);
+            var ph = presetNameField.placeholder as TMP_Text;
+            if (ph != null) ph.text = "Preset name...";
+            var saveBtn = BuildButton(row, "Save", 32, ColorAccentDim);
+            LayoutElem(saveBtn.gameObject, flexibleWidth: 1f, minHeight: 90f);
+            saveBtn.onClick.AddListener(SaveCurrentAsPreset);
+        }
+
+        statusText = Label(parent, "Ready", 24);
+        LayoutElem(statusText.gameObject, minHeight: 50f);
+
+        Spacer(parent, 30f);
+        SectionHeader(parent, "Layers");
+    }
+
+    // ================================================================
+    // Layer panels (collapsible) with category groups (also collapsible)
+    // ================================================================
+
+    void BuildLayerPanels(Transform parent)
+    {
+        var list = new List<SFXLabLayerPanel>();
+        foreach (WaveLayer layer in Enum.GetValues(typeof(WaveLayer)))
+            list.Add(BuildLayerPanel(parent, layer));
+        panels = list.ToArray();
+    }
+
+    SFXLabLayerPanel BuildLayerPanel(Transform parent, WaveLayer layer)
+    {
+        var panelGO = MakeRect($"Layer_{layer}", parent);
+        var img = panelGO.AddComponent<Image>();
+        StyleBg(img, ColorPanel, Rounding.Large);
+        var vlg = panelGO.AddComponent<VerticalLayoutGroup>();
+        vlg.padding = new RectOffset(14, 14, 8, 14);
+        vlg.spacing = 6f;
+        vlg.childControlWidth = true;
+        vlg.childForceExpandWidth = true;
+        vlg.childControlHeight = false;
+        vlg.childForceExpandHeight = false;
+        panelGO.AddComponent<ContentSizeFitter>().verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+
+        // Header row: [Toggle] [layer name + arrow — clickable Button covers the rest]
+        var header = HorizontalRow(panelGO.transform, 100f);
+        var toggle = BuildToggle(header, "", sizePx: 80);
+        LayoutElem(toggle.gameObject, minWidth: 100f, minHeight: 100f);
+
+        var collapseBtnGO = new GameObject("CollapseButton", typeof(RectTransform), typeof(Image), typeof(Button));
+        collapseBtnGO.transform.SetParent(header, false);
+        LayoutElem(collapseBtnGO, flexibleWidth: 1f, minHeight: 100f);
+        var cbImg = collapseBtnGO.GetComponent<Image>();
+        cbImg.sprite = whiteSprite;
+        cbImg.color = ColorPanel;
+        var cbBtn = collapseBtnGO.GetComponent<Button>();
+        cbBtn.targetGraphic = cbImg;
+
+        var layerLabel = Label(collapseBtnGO.transform, layer.ToString(), 44, TextAlignmentOptions.MidlineLeft, FontStyles.Bold);
+        var llrt = layerLabel.rectTransform;
+        llrt.anchorMin = new Vector2(0, 0);
+        llrt.anchorMax = new Vector2(1, 1);
+        llrt.offsetMin = new Vector2(8, 0);
+        llrt.offsetMax = new Vector2(-60, 0);
+        layerLabel.raycastTarget = false;
+
+        var panelArrow = Label(collapseBtnGO.transform, "▸", 44, TextAlignmentOptions.MidlineRight);
+        var part = panelArrow.rectTransform;
+        part.anchorMin = new Vector2(1, 0);
+        part.anchorMax = new Vector2(1, 1);
+        part.pivot = new Vector2(1, 0.5f);
+        part.anchoredPosition = new Vector2(-6, 0);
+        part.sizeDelta = new Vector2(60, 0);
+        panelArrow.raycastTarget = false;
+
+        // Panel content — the collapsible body
+        var panelContentGO = MakeRect("PanelContent", panelGO.transform);
+        var pcvlg = panelContentGO.AddComponent<VerticalLayoutGroup>();
+        pcvlg.padding = new RectOffset(0, 0, 6, 0);
+        pcvlg.spacing = 6f;
+        pcvlg.childControlWidth = true;
+        pcvlg.childForceExpandWidth = true;
+        pcvlg.childControlHeight = false;
+        pcvlg.childForceExpandHeight = false;
+
+        var panelCollapsible = panelGO.AddComponent<SFXLabCollapsible>();
+        panelCollapsible.Init(panelContentGO, panelArrow, cbBtn, initiallyCollapsed: true);
+
+        // Category sub-groups
+        var categoryCollapsibles = new SFXLabCollapsible[CategoryColors.Length];
+        var sliders = new SFXLabSlider[SFXLabParamRanges.FieldOrder.Length];
+
+        foreach (SFXLabParamRanges.Category cat in Enum.GetValues(typeof(SFXLabParamRanges.Category)))
+        {
+            var c = BuildCategoryGroup(panelContentGO.transform, cat, sliders,
+                                       initiallyCollapsed: cat != SFXLabParamRanges.Category.Core);
+            categoryCollapsibles[(int)cat] = c;
+        }
+
+        var panel = panelGO.AddComponent<SFXLabLayerPanel>();
+        panel.Layer = layer;
+        panel.LayerLabel = layerLabel;
+        panel.EnableToggle = toggle;
+        panel.Sliders = sliders;
+        panel.PanelCollapsible = panelCollapsible;
+        panel.CategoryCollapsibles = categoryCollapsibles;
+        return panel;
+    }
+
+    SFXLabCollapsible BuildCategoryGroup(
+        Transform parent,
+        SFXLabParamRanges.Category cat,
+        SFXLabSlider[] slidersOut,
+        bool initiallyCollapsed)
+    {
+        var groupGO = MakeRect($"Cat_{cat}", parent);
+        var gvlg = groupGO.AddComponent<VerticalLayoutGroup>();
+        gvlg.padding = new RectOffset(0, 0, 0, 0);
+        gvlg.spacing = 2f;
+        gvlg.childControlWidth = true;
+        gvlg.childForceExpandWidth = true;
+        gvlg.childControlHeight = false;
+        gvlg.childForceExpandHeight = false;
+
+        // Header: [color bar][arrow][category name] — the whole row is a Button
+        var headerGO = new GameObject("CatHeader", typeof(RectTransform), typeof(Image), typeof(Button));
+        headerGO.transform.SetParent(groupGO.transform, false);
+        LayoutElem(headerGO, minHeight: 70f);
+        var headerImg = headerGO.GetComponent<Image>();
+        StyleBg(headerImg, ColorPanelHeader);
+        var headerBtn = headerGO.GetComponent<Button>();
+        headerBtn.targetGraphic = headerImg;
+
+        // Color bar anchored to the left edge
+        var barGO = MakeRect("ColorBar", headerGO.transform);
+        var brt = barGO.GetComponent<RectTransform>();
+        brt.anchorMin = new Vector2(0, 0);
+        brt.anchorMax = new Vector2(0, 1);
+        brt.pivot = new Vector2(0, 0.5f);
+        brt.sizeDelta = new Vector2(10f, 0);
+        brt.anchoredPosition = Vector2.zero;
+        var barImg = barGO.AddComponent<Image>();
+        barImg.sprite = whiteSprite;
+        barImg.color = CategoryColors[(int)cat];
+        barImg.raycastTarget = false;
+
+        var catArrow = Label(headerGO.transform, "▾", 32, TextAlignmentOptions.MidlineLeft);
+        var art = catArrow.rectTransform;
+        art.anchorMin = new Vector2(0, 0);
+        art.anchorMax = new Vector2(0, 1);
+        art.pivot = new Vector2(0, 0.5f);
+        art.sizeDelta = new Vector2(40, 0);
+        art.anchoredPosition = new Vector2(26, 0);
+        catArrow.raycastTarget = false;
+
+        var catName = Label(headerGO.transform, cat.ToString(), 30, TextAlignmentOptions.MidlineLeft, FontStyles.Bold);
+        var nrt = catName.rectTransform;
+        nrt.anchorMin = new Vector2(0, 0);
+        nrt.anchorMax = new Vector2(1, 1);
+        nrt.offsetMin = new Vector2(70, 0);
+        nrt.offsetMax = new Vector2(-8, 0);
+        catName.raycastTarget = false;
+
+        // Body: sliders for this category
+        var contentGO = MakeRect("CatContent", groupGO.transform);
+        var cvlg = contentGO.AddComponent<VerticalLayoutGroup>();
+        cvlg.padding = new RectOffset(14, 4, 6, 6);
+        cvlg.spacing = 4f;
+        cvlg.childControlWidth = true;
+        cvlg.childForceExpandWidth = true;
+        cvlg.childControlHeight = false;
+        cvlg.childForceExpandHeight = false;
+
+        for (int i = 0; i < SFXLabParamRanges.FieldEntries.Length; i++)
+        {
+            if (SFXLabParamRanges.FieldEntries[i].Category != cat) continue;
+            slidersOut[i] = BuildSliderRow(contentGO.transform, SFXLabParamRanges.FieldEntries[i].Name);
+        }
+
+        var collapsible = groupGO.AddComponent<SFXLabCollapsible>();
+        collapsible.Init(contentGO, catArrow, headerBtn, initiallyCollapsed);
+        return collapsible;
+    }
+
+    SFXLabSlider BuildSliderRow(Transform parent, string paramName)
+    {
+        var row = HorizontalRow(parent, 65f);
+        var label = Label(row, paramName, 24);
+        LayoutElem(label.gameObject, minWidth: 280f);
+
+        var range = SFXLabParamRanges.Ranges[paramName];
+        var slider = BuildSlider(row, range.Min, range.Max, range.Default);
+        LayoutElem(slider.gameObject, flexibleWidth: 1f, minHeight: 55f);
+
+        var valueText = Label(row, "0", 24, TextAlignmentOptions.MidlineRight);
+        LayoutElem(valueText.gameObject, minWidth: 130f);
+
+        var c = row.gameObject.AddComponent<SFXLabSlider>();
+        c.Label = label;
+        c.Slider = slider;
+        c.ValueText = valueText;
+
+        // Long-press the slider handle/track to reset that param to its default.
+        var lp = slider.gameObject.AddComponent<SFXLabLongPress>();
+        lp.OnLongPress = () =>
+        {
+            c.ResetToDefault();
+            SetStatus($"Reset {paramName}");
+        };
+        return c;
+    }
+
+    // ================================================================
+    // UI primitives
+    // ================================================================
+
+    static Sprite CreateWhiteSprite()
+    {
+        var tex = new Texture2D(2, 2);
+        var px = new Color[] { Color.white, Color.white, Color.white, Color.white };
+        tex.SetPixels(px);
+        tex.Apply();
+        tex.hideFlags = HideFlags.HideAndDontSave;
+        return Sprite.Create(tex, new Rect(0, 0, 2, 2), new Vector2(0.5f, 0.5f));
+    }
+
+    // 9-slice rounded rectangle. Corners stay crisp at any size the image is stretched to.
+    static Sprite CreateRoundedSprite(int size, int cornerRadius)
+    {
+        var tex = new Texture2D(size, size, TextureFormat.RGBA32, mipChain: false)
+        {
+            filterMode = FilterMode.Bilinear,
+            wrapMode = TextureWrapMode.Clamp,
+            hideFlags = HideFlags.HideAndDontSave,
+        };
+        var pixels = new Color[size * size];
+        float r = cornerRadius;
+        float cx = (size - 1) * 0.5f;
+        float cy = (size - 1) * 0.5f;
+        float halfSize = (size - 1) * 0.5f;
+
+        for (int y = 0; y < size; y++)
+        {
+            for (int x = 0; x < size; x++)
+            {
+                // Signed-distance function for a rounded rectangle centered in the texture.
+                float dx = Mathf.Abs(x - cx) - (halfSize - r);
+                float dy = Mathf.Abs(y - cy) - (halfSize - r);
+                float outside = Mathf.Sqrt(Mathf.Max(dx, 0f) * Mathf.Max(dx, 0f) + Mathf.Max(dy, 0f) * Mathf.Max(dy, 0f));
+                float inside  = Mathf.Min(Mathf.Max(dx, dy), 0f);
+                float sd = outside + inside - r;
+
+                // 1-pixel antialiased edge: alpha 1 deep inside, 0 outside, linear across the edge.
+                float alpha = Mathf.Clamp01(0.5f - sd);
+                pixels[y * size + x] = new Color(1f, 1f, 1f, alpha);
+            }
+        }
+        tex.SetPixels(pixels);
+        tex.Apply();
+
+        var border = new Vector4(cornerRadius, cornerRadius, cornerRadius, cornerRadius);
+        return Sprite.Create(tex, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f), 100f, 0, SpriteMeshType.FullRect, border);
+    }
+
+    public enum Rounding { None, Small, Large }
+
+    void StyleBg(Image img, Color color, Rounding rounding = Rounding.Small)
+    {
+        img.sprite = rounding switch
+        {
+            Rounding.Large => roundedLargeSprite,
+            Rounding.Small => roundedSmallSprite,
+            _              => whiteSprite,
+        };
+        img.type  = rounding == Rounding.None ? Image.Type.Simple : Image.Type.Sliced;
+        img.color = color;
+    }
+
+    static GameObject MakeRect(string name, Transform parent)
+    {
+        var go = new GameObject(name, typeof(RectTransform));
+        go.transform.SetParent(parent, false);
+        return go;
+    }
+
+    static void AnchorFill(RectTransform rt)
+    {
+        rt.anchorMin = Vector2.zero;
+        rt.anchorMax = Vector2.one;
+        rt.offsetMin = Vector2.zero;
+        rt.offsetMax = Vector2.zero;
+    }
+
+    static LayoutElement LayoutElem(GameObject go, float minWidth = -1, float minHeight = -1, float flexibleWidth = -1, float flexibleHeight = -1)
+    {
+        var le = go.GetComponent<LayoutElement>() ?? go.AddComponent<LayoutElement>();
+        if (minWidth       >= 0) le.minWidth       = minWidth;
+        if (minHeight      >= 0) le.minHeight      = minHeight;
+        if (flexibleWidth  >= 0) le.flexibleWidth  = flexibleWidth;
+        if (flexibleHeight >= 0) le.flexibleHeight = flexibleHeight;
+        return le;
+    }
+
+    static void Spacer(Transform parent, float height)
+    {
+        var go = MakeRect("Spacer", parent);
+        LayoutElem(go, minHeight: height);
+    }
+
+    void SectionHeader(Transform parent, string text)
+    {
+        var t = Label(parent, text, 44, TextAlignmentOptions.MidlineLeft, FontStyles.Bold);
+        t.color = ColorAccent;
+        LayoutElem(t.gameObject, minHeight: 80f);
+    }
+
+    Transform HorizontalRow(Transform parent, float minHeight)
+    {
+        var go = new GameObject("Row", typeof(RectTransform), typeof(HorizontalLayoutGroup));
+        go.transform.SetParent(parent, false);
+        var hlg = go.GetComponent<HorizontalLayoutGroup>();
+        hlg.childControlWidth = false;
+        hlg.childControlHeight = true;
+        hlg.childForceExpandHeight = true;
+        hlg.childForceExpandWidth = false;
+        hlg.spacing = 12f;
+        LayoutElem(go, minHeight: minHeight);
+        return go.transform;
+    }
+
+    TextMeshProUGUI Label(Transform parent, string text, int fontSize,
+                          TextAlignmentOptions align = TextAlignmentOptions.MidlineLeft,
+                          FontStyles style = FontStyles.Normal)
+    {
+        var go = new GameObject("Label", typeof(RectTransform), typeof(TextMeshProUGUI));
+        go.transform.SetParent(parent, false);
+        var t = go.GetComponent<TextMeshProUGUI>();
+        if (uiFont != null) t.font = uiFont;
+        t.fontSize = fontSize;
+        t.fontStyle = style;
+        t.text = text;
+        t.alignment = align;
+        t.color = ColorText;
+        t.textWrappingMode = TextWrappingModes.NoWrap;
+        t.overflowMode = TextOverflowModes.Overflow;
+        return t;
+    }
+
+    Button BuildButton(Transform parent, string text, int fontSize, Color bgColor)
+    {
+        var go = new GameObject("Button", typeof(RectTransform), typeof(Image), typeof(Button));
+        go.transform.SetParent(parent, false);
+        var img = go.GetComponent<Image>();
+        StyleBg(img, bgColor);
+
+        var t = Label(go.transform, text, fontSize, TextAlignmentOptions.Center, FontStyles.Bold);
+        AnchorFill(t.rectTransform);
+        t.raycastTarget = false;
+
+        var btn = go.GetComponent<Button>();
+        btn.targetGraphic = img;
+        var colors = btn.colors;
+        colors.highlightedColor = Color.Lerp(bgColor, Color.white, 0.15f);
+        colors.pressedColor     = Color.Lerp(bgColor, Color.black, 0.15f);
+        btn.colors = colors;
+        return btn;
+    }
+
+    Slider BuildSlider(Transform parent, float min, float max, float value, bool whole = false)
+    {
+        var go = new GameObject("Slider", typeof(RectTransform), typeof(Image));
+        go.transform.SetParent(parent, false);
+        var bg = go.GetComponent<Image>();
+        StyleBg(bg, ColorWidget);
+
+        var fillArea = MakeRect("FillArea", go.transform);
+        var far = fillArea.GetComponent<RectTransform>();
+        far.anchorMin = new Vector2(0, 0.4f);
+        far.anchorMax = new Vector2(1, 0.6f);
+        far.offsetMin = new Vector2(15, 0);
+        far.offsetMax = new Vector2(-40, 0);
+
+        var fillGO = MakeRect("Fill", fillArea.transform);
+        var fillRT = fillGO.GetComponent<RectTransform>();
+        AnchorFill(fillRT);
+        var fillImg = fillGO.AddComponent<Image>();
+        fillImg.sprite = whiteSprite;
+        fillImg.color = ColorAccent;
+
+        var handleArea = MakeRect("HandleArea", go.transform);
+        var hart = handleArea.GetComponent<RectTransform>();
+        hart.anchorMin = Vector2.zero;
+        hart.anchorMax = Vector2.one;
+        hart.offsetMin = new Vector2(25, 0);
+        hart.offsetMax = new Vector2(-25, 0);
+
+        var handleGO = MakeRect("Handle", handleArea.transform);
+        var handleRT = handleGO.GetComponent<RectTransform>();
+        handleRT.anchorMin = new Vector2(0, 0);
+        handleRT.anchorMax = new Vector2(0, 1);
+        handleRT.sizeDelta = new Vector2(55, 10);
+        var handleImg = handleGO.AddComponent<Image>();
+        StyleBg(handleImg, Color.white);
+
+        var slider = go.AddComponent<Slider>();
+        slider.fillRect = fillRT;
+        slider.handleRect = handleRT;
+        slider.targetGraphic = handleImg;
+        slider.direction = Slider.Direction.LeftToRight;
+        slider.minValue = min;
+        slider.maxValue = max;
+        slider.wholeNumbers = whole;
+        slider.value = value;
+        return slider;
+    }
+
+    Toggle BuildToggle(Transform parent, string text, int sizePx = 80)
+    {
+        var go = new GameObject("Toggle", typeof(RectTransform), typeof(Toggle));
+        go.transform.SetParent(parent, false);
+
+        var bgGO = MakeRect("Bg", go.transform);
+        var bgRT = bgGO.GetComponent<RectTransform>();
+        bgRT.anchorMin = new Vector2(0, 0.5f);
+        bgRT.anchorMax = new Vector2(0, 0.5f);
+        bgRT.pivot = new Vector2(0, 0.5f);
+        bgRT.sizeDelta = new Vector2(sizePx, sizePx);
+        bgRT.anchoredPosition = Vector2.zero;
+        var bgImg = bgGO.AddComponent<Image>();
+        StyleBg(bgImg, ColorWidget);
+
+        var markGO = MakeRect("Check", bgGO.transform);
+        var mrt = markGO.GetComponent<RectTransform>();
+        mrt.anchorMin = new Vector2(0.18f, 0.18f);
+        mrt.anchorMax = new Vector2(0.82f, 0.82f);
+        mrt.offsetMin = Vector2.zero;
+        mrt.offsetMax = Vector2.zero;
+        var markImg = markGO.AddComponent<Image>();
+        StyleBg(markImg, ColorAccent);
+
+        if (!string.IsNullOrEmpty(text))
+        {
+            var l = Label(go.transform, text, 32);
+            var lrt = l.rectTransform;
+            lrt.anchorMin = Vector2.zero;
+            lrt.anchorMax = Vector2.one;
+            lrt.offsetMin = new Vector2(sizePx + 20, 0);
+            lrt.offsetMax = Vector2.zero;
+        }
+
+        var toggle = go.GetComponent<Toggle>();
+        toggle.targetGraphic = bgImg;
+        toggle.graphic = markImg;
+        toggle.isOn = false;
+        return toggle;
+    }
+
+    TMP_Dropdown BuildDropdown(Transform parent, List<string> options)
+    {
+        var ddGO = TMP_DefaultControls.CreateDropdown(uiResources);
+        ddGO.transform.SetParent(parent, false);
+
+        var img = ddGO.GetComponent<Image>();
+        img.color = ColorWidget;
+
+        foreach (var t in ddGO.GetComponentsInChildren<TMP_Text>(includeInactive: true))
+        {
+            if (uiFont != null) t.font = uiFont;
+            t.fontSize = 30;
+            t.color = ColorText;
+        }
+        var template = ddGO.transform.Find("Template");
+        if (template != null)
+        {
+            var tImg = template.GetComponent<Image>();
+            if (tImg != null) tImg.color = ColorPanel;
+            var itemBg = template.Find("Viewport/Content/Item/Item Background");
+            if (itemBg != null) itemBg.GetComponent<Image>().color = ColorPanel;
+            var itemCheck = template.Find("Viewport/Content/Item/Item Checkmark");
+            if (itemCheck != null) itemCheck.GetComponent<Image>().color = ColorAccent;
+            var tr = template.GetComponent<RectTransform>();
+            if (tr != null) tr.sizeDelta = new Vector2(tr.sizeDelta.x, 500f);
+            var item = template.Find("Viewport/Content/Item");
+            if (item != null) item.GetComponent<RectTransform>().sizeDelta = new Vector2(0, 90);
+        }
+
+        var dd = ddGO.GetComponent<TMP_Dropdown>();
+        dd.ClearOptions();
+        dd.AddOptions(options);
+        return dd;
+    }
+
+    TMP_InputField BuildInputField(Transform parent, string initial)
+    {
+        var fieldGO = TMP_DefaultControls.CreateInputField(uiResources);
+        fieldGO.transform.SetParent(parent, false);
+
+        var img = fieldGO.GetComponent<Image>();
+        img.color = ColorWidget;
+
+        foreach (var t in fieldGO.GetComponentsInChildren<TMP_Text>(includeInactive: true))
+        {
+            if (uiFont != null) t.font = uiFont;
+            t.fontSize = 26;
+            t.color = t.gameObject.name.Contains("Placeholder") ? ColorPlaceholder : ColorText;
+        }
+
+        var field = fieldGO.GetComponent<TMP_InputField>();
+        field.text = initial;
+        return field;
+    }
+
+    // ================================================================
+    // Actions
+    // ================================================================
+
+    public void Play()
+    {
+        var tuples = BuildTuples();
+        if (tuples.Length == 0) { SetStatus("No layers enabled"); return; }
+        SFXManager.Instance.Emit(tuples);
+        SetStatus($"Played {tuples.Length} layer(s)");
+    }
+
+    public void Stop()
+    {
+        // Stop is a hard kill: flip Loop off first so the next loop tick can't re-trigger
+        // right after StopAll fades out current sounds. Without this, the user would hear
+        // silence for ~1 tick of the loop interval and then the sound would come back.
+        if (loopToggle != null) loopToggle.isOn = false;
+        SFXManager.Instance.StopAll(0.08f);
+        SetStatus("Stopped");
+    }
+
+    public void LoadPreset()
+    {
+        int idx = presetDropdown.value;
+        if (idx < 0 || idx >= presetKeys.Count) return;
+        string key = presetKeys[idx];
+        int variationIdx = Mathf.Clamp((int)variationSlider.value, 0, presets[key].Length - 1);
+        var variation = presets[key][variationIdx];
+
+        foreach (var p in panels)
+        {
+            p.Clear();
+            p.SetCollapsed(true);
+        }
+
+        foreach (var (layer, env) in variation)
+        {
+            var panel = GetPanel(layer);
+            if (panel == null) continue;
+            panel.LoadFrom(env);
+            panel.SetCollapsed(false);
+        }
+        SetStatus($"Loaded {key} [{variationIdx}]");
+    }
+
+    public void Export()
+    {
+        var tuples = BuildTuples();
+        string code = BuildCodeString(tuples);
+        GUIUtility.systemCopyBuffer = code;
+
+        string folder = outputFolderField.text;
+        if (!string.IsNullOrWhiteSpace(folder))
+        {
+            try
+            {
+                Directory.CreateDirectory(folder);
+                string stamp = DateTime.Now.ToString("MMdd_HHmmss");
+                string path = Path.Combine(folder, $"sfx_export_{stamp}.txt");
+                File.WriteAllText(path, code);
+                SetStatus($"Clipboard + {Path.GetFileName(path)}");
+                return;
+            }
+            catch (Exception e)
+            {
+                Debug.LogError(e);
+                SetStatus($"Clipboard only ({e.Message})");
+                return;
+            }
+        }
+        SetStatus("Copied to clipboard");
+    }
+
+    public void Clear()
+    {
+        foreach (var p in panels) p.Clear();
+        SetStatus("Cleared");
+    }
+
+    SFXLabLayerPanel GetPanel(WaveLayer layer)
+    {
+        foreach (var p in panels) if (p.Layer == layer) return p;
+        return null;
+    }
+
+    (WaveLayer, WaveEnvelope)[] BuildTuples()
+    {
+        var list = new List<(WaveLayer, WaveEnvelope)>();
+        foreach (var p in panels)
+            if (p.Enabled) list.Add((p.Layer, p.BuildEnvelope()));
+        return list.ToArray();
+    }
+
+    string BuildCodeString((WaveLayer, WaveEnvelope)[] tuples)
+    {
+        if (tuples.Length == 0) return "// no layers enabled";
+        var sb = new StringBuilder();
+        sb.AppendLine("SFXManager.Instance.Emit(");
+        for (int i = 0; i < tuples.Length; i++)
+        {
+            var (layer, env) = tuples[i];
+            string suffix = i < tuples.Length - 1 ? "," : ");";
+            sb.AppendLine($"    (WaveLayer.{layer}, new({FormatEnvelope(env)})){suffix}");
+        }
+        return sb.ToString();
+    }
+
+    static string FormatEnvelope(WaveEnvelope env)
+    {
+        var parts = new List<string>();
+        if (env.intensity       != 0f)    parts.Add($"intensity: {env.intensity}f");
+        if (env.pitchBend       != 0f)    parts.Add($"pitchBend: {env.pitchBend}f");
+        if (env.decayRate       != 0.99f) parts.Add($"decayRate: {env.decayRate}f");
+        if (env.attackRate      != 0.01f) parts.Add($"attackRate: {env.attackRate}f");
+        if (env.vibratoSpeed    != 0f)    parts.Add($"vibratoSpeed: {env.vibratoSpeed}f");
+        if (env.vibratoDepth    != 0f)    parts.Add($"vibratoDepth: {env.vibratoDepth}f");
+        if (env.tremoloSpeed    != 0f)    parts.Add($"tremoloSpeed: {env.tremoloSpeed}f");
+        if (env.tremoloDepth    != 0f)    parts.Add($"tremoloDepth: {env.tremoloDepth}f");
+        if (env.dutyCycle       != 0.5f)  parts.Add($"dutyCycle: {env.dutyCycle}f");
+        if (env.harmonics       != 0f)    parts.Add($"harmonics: {env.harmonics}f");
+        if (env.filterCutoff    != 1f)    parts.Add($"filterCutoff: {env.filterCutoff}f");
+        if (env.filterResonance != 0f)    parts.Add($"filterResonance: {env.filterResonance}f");
+        if (env.bitCrush        != 16f)   parts.Add($"bitCrush: {env.bitCrush}f");
+        if (env.fmAmount        != 0f)    parts.Add($"fmAmount: {env.fmAmount}f");
+        if (env.fmRatio         != 1f)    parts.Add($"fmRatio: {env.fmRatio}f");
+        if (env.pitchRandomness != 0f)    parts.Add($"pitchRandomness: {env.pitchRandomness}f");
+        if (env.ampRandomness   != 0f)    parts.Add($"ampRandomness: {env.ampRandomness}f");
+        if (env.startDelay      != 0f)    parts.Add($"startDelay: {env.startDelay}f");
+        return string.Join(", ", parts);
+    }
+
+    void SetStatus(string msg)
+    {
+        if (statusText != null) statusText.text = msg;
+    }
+
+    // ================================================================
+    // User presets (persisted via PlayerPrefs)
+    // ================================================================
+
+    [Serializable]
+    class SavedPreset
+    {
+        public string name;
+        public int[] layers;
+        public WaveEnvelope[] envelopes;
+    }
+
+    [Serializable]
+    class UserPresetDB
+    {
+        public List<SavedPreset> presets = new();
+    }
+
+    void RebuildPresetKeys()
+    {
+        presetKeys = presets.Keys.ToList();
+        presetKeys.Sort((a, b) =>
+        {
+            bool aUser = a.StartsWith(UserPrefix);
+            bool bUser = b.StartsWith(UserPrefix);
+            if (aUser != bUser) return aUser ? 1 : -1; // built-ins first, users at the bottom
+            return string.Compare(a, b, StringComparison.Ordinal);
+        });
+    }
+
+    void LoadUserPresets()
+    {
+        string json = PlayerPrefs.GetString(UserPrefsKey, "");
+        if (string.IsNullOrEmpty(json)) return;
+
+        UserPresetDB db = null;
+        try { db = JsonUtility.FromJson<UserPresetDB>(json); }
+        catch (Exception e) { Debug.LogWarning($"[SFXLab] Corrupt user-preset store: {e.Message}"); return; }
+        if (db == null || db.presets == null) return;
+
+        foreach (var sp in db.presets)
+        {
+            if (sp.layers == null || sp.envelopes == null || sp.layers.Length != sp.envelopes.Length) continue;
+            var tuples = new (WaveLayer, WaveEnvelope)[sp.layers.Length];
+            for (int i = 0; i < sp.layers.Length; i++)
+                tuples[i] = ((WaveLayer)sp.layers[i], sp.envelopes[i]);
+            userPresets[sp.name] = tuples;
+            presets[UserPrefix + sp.name] = new[] { tuples };
+        }
+    }
+
+    void PersistUserPresets()
+    {
+        var db = new UserPresetDB();
+        foreach (var kv in userPresets)
+        {
+            var tuples = kv.Value;
+            var sp = new SavedPreset
+            {
+                name = kv.Key,
+                layers = new int[tuples.Length],
+                envelopes = new WaveEnvelope[tuples.Length],
+            };
+            for (int i = 0; i < tuples.Length; i++)
+            {
+                sp.layers[i] = (int)tuples[i].Item1;
+                sp.envelopes[i] = tuples[i].Item2;
+            }
+            db.presets.Add(sp);
+        }
+        PlayerPrefs.SetString(UserPrefsKey, JsonUtility.ToJson(db));
+        PlayerPrefs.Save();
+    }
+
+    void UpdateDeleteButtonState()
+    {
+        if (deleteButton == null || presetDropdown == null) return;
+        int idx = presetDropdown.value;
+        bool isUser = idx >= 0 && idx < presetKeys.Count && presetKeys[idx].StartsWith(UserPrefix);
+        deleteButton.interactable = isUser;
+    }
+
+    public void DeleteSelectedPreset()
+    {
+        int idx = presetDropdown.value;
+        if (idx < 0 || idx >= presetKeys.Count) return;
+        string key = presetKeys[idx];
+        if (!key.StartsWith(UserPrefix)) return;
+        string rawName = key.Substring(UserPrefix.Length);
+
+        userPresets.Remove(rawName);
+        presets.Remove(key);
+        PersistUserPresets();
+
+        RebuildPresetKeys();
+        presetDropdown.ClearOptions();
+        presetDropdown.AddOptions(presetKeys);
+        presetDropdown.value = 0;
+        UpdateDeleteButtonState();
+
+        SetStatus($"Deleted '{rawName}'");
+    }
+
+    public void SaveCurrentAsPreset()
+    {
+        string name = presetNameField != null ? presetNameField.text?.Trim() : null;
+        if (string.IsNullOrWhiteSpace(name)) { SetStatus("Name required"); return; }
+        if (presets.ContainsKey(name) && !presets.ContainsKey(UserPrefix + name))
+        {
+            SetStatus($"Name collides with built-in '{name}'");
+            return;
+        }
+
+        var tuples = BuildTuples();
+        if (tuples.Length == 0) { SetStatus("No layers enabled"); return; }
+
+        userPresets[name] = tuples;
+        presets[UserPrefix + name] = new[] { tuples };
+        PersistUserPresets();
+
+        RebuildPresetKeys();
+        int newIdx = presetKeys.IndexOf(UserPrefix + name);
+        if (presetDropdown != null)
+        {
+            presetDropdown.ClearOptions();
+            presetDropdown.AddOptions(presetKeys);
+            if (newIdx >= 0) presetDropdown.value = newIdx;
+        }
+        UpdateDeleteButtonState();
+
+        SetStatus($"Saved '{name}' ({tuples.Length} layer(s))");
+    }
+}
