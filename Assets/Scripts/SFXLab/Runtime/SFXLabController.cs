@@ -26,28 +26,29 @@ public class SFXLabController : MonoBehaviour
     const int CircleSpriteSize    = 64;
     const float LoopIntervalSeconds = 0.5f;
 
+    // ===== Tunables =====
+    // Single multiplier applied to every UI vertical dimension (row heights,
+    // padding, spacing, slider tracks, handles, etc). 1 = HTML mockup spec.
+    [SerializeField] float uiScale = 1f;
+
     // ===== Runtime state =====
     Dictionary<string, (WaveLayer, WaveEnvelope)[]> presets;
     List<string> presetKeys;
     string selectedKey;
     float loopTimer;
-
     Toggle loopToggle;
 
-    // ===== Live modifiers =====
-    const float DefaultVolume        = 0.8f;
-    const float DefaultPitchSemis    = 0f;
-    const float DefaultFilterAmount  = 1f;
-    const float DefaultBitCrushAmt   = 0f;
-    const float DefaultVibratoAmt    = 0f;
+    // ===== Sustain state =====
+    const float DefaultVolume      = 0.8f;
+    const float DefaultReleaseTime = 0.5f;
 
-    float volume         = DefaultVolume;
-    float pitchSemitones = DefaultPitchSemis;   // -12..+12, applied as freq offset on synth waves
-    float filterAmount   = DefaultFilterAmount; // 0..1, multiplies preset filterCutoff
-    float bitCrushAmt    = DefaultBitCrushAmt;  // 0..1, lerps bitCrush toward 1-bit
-    float vibratoAmt     = DefaultVibratoAmt;   // 0..1, adds vibrato depth on top of preset
+    float volume       = DefaultVolume;
+    float releaseTime  = DefaultReleaseTime;
 
-    readonly List<(Slider slider, float defaultValue)> modSliders = new();
+    SFXEmitter activeEmitter;
+
+    float H(float h)  => h * uiScale;
+    int   Hi(float h) => Mathf.RoundToInt(h * uiScale);
 
     Sprite whiteSprite;
     Sprite roundedSprite;
@@ -129,16 +130,18 @@ public class SFXLabController : MonoBehaviour
         canvas.renderMode = RenderMode.ScreenSpaceOverlay;
         var scaler = canvasGO.GetComponent<CanvasScaler>();
         scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-        scaler.referenceResolution = new Vector2(1080, 1920);
-        scaler.matchWidthOrHeight = 0.5f;
+        // Canvas reference matches the HTML mockup's phone-pixel space
+        // (380 wide), so HTML px values translate 1:1 to source units.
+        scaler.referenceResolution = new Vector2(380, 800);
+        scaler.matchWidthOrHeight = 0f;
 
         var rootGO = MakeRect("Root", canvasGO.transform);
         var rootRT = rootGO.GetComponent<RectTransform>();
-        rootRT.anchorMin = new Vector2(0.5f, 0);
-        rootRT.anchorMax = new Vector2(0.5f, 1);
-        rootRT.pivot = new Vector2(0.5f, 0.5f);
-        rootRT.sizeDelta = new Vector2(960, 0);
-        rootRT.anchoredPosition = Vector2.zero;
+        rootRT.anchorMin = new Vector2(0, 0);
+        rootRT.anchorMax = new Vector2(1, 1);
+        rootRT.pivot     = new Vector2(0.5f, 0.5f);
+        rootRT.offsetMin = Vector2.zero;
+        rootRT.offsetMax = Vector2.zero;
         var rootVLG = rootGO.AddComponent<VerticalLayoutGroup>();
         rootVLG.childControlWidth = true;
         rootVLG.childForceExpandWidth = true;
@@ -152,7 +155,7 @@ public class SFXLabController : MonoBehaviour
     void BuildPresetList(Transform root)
     {
         var scrollGO = MakeRect("Scroll", root);
-        LayoutElem(scrollGO, flexibleHeight: 1f, minHeight: 400f);
+        LayoutElem(scrollGO, flexibleHeight: 1f, minHeight: H(400f));
         var scrollBg = scrollGO.AddComponent<Image>();
         scrollBg.sprite = whiteSprite;
         scrollBg.color = ColorBg;
@@ -174,8 +177,8 @@ public class SFXLabController : MonoBehaviour
         contentRT.pivot = new Vector2(0.5f, 1);
         contentRT.sizeDelta = Vector2.zero;
         var vlg = contentGO.AddComponent<VerticalLayoutGroup>();
-        vlg.padding = new RectOffset(16, 16, 16, 16);
-        vlg.spacing = 6f;
+        vlg.padding = new RectOffset(12, 12, 12, 12);
+        vlg.spacing = 4f;
         vlg.childControlWidth = true;
         vlg.childForceExpandWidth = true;
         vlg.childControlHeight = false;
@@ -194,7 +197,7 @@ public class SFXLabController : MonoBehaviour
     {
         var rowGO = new GameObject("PresetRow", typeof(RectTransform), typeof(Image), typeof(Toggle));
         rowGO.transform.SetParent(parent, false);
-        LayoutElem(rowGO, minHeight: 56f);
+        LayoutElem(rowGO, minHeight: H(44f));
 
         var bg = rowGO.GetComponent<Image>();
         StyleBg(bg, ColorWidget);
@@ -205,8 +208,8 @@ public class SFXLabController : MonoBehaviour
         ringRT.anchorMin = new Vector2(0, 0.5f);
         ringRT.anchorMax = new Vector2(0, 0.5f);
         ringRT.pivot = new Vector2(0, 0.5f);
-        ringRT.sizeDelta = new Vector2(28, 28);
-        ringRT.anchoredPosition = new Vector2(18, 0);
+        ringRT.sizeDelta = new Vector2(H(16f), H(16f));
+        ringRT.anchoredPosition = new Vector2(14, 0);
         var ringImg = ringGO.AddComponent<Image>();
         ringImg.sprite = circleSprite;
         ringImg.type = Image.Type.Sliced;
@@ -227,12 +230,12 @@ public class SFXLabController : MonoBehaviour
         dotImg.raycastTarget = false;
 
         // Label
-        var label = Label(rowGO.transform, key, 22);
+        var label = Label(rowGO.transform, key, 14);
         var lrt = label.rectTransform;
         lrt.anchorMin = Vector2.zero;
         lrt.anchorMax = Vector2.one;
-        lrt.offsetMin = new Vector2(64, 0);
-        lrt.offsetMax = new Vector2(-16, 0);
+        lrt.offsetMin = new Vector2(42, 0);
+        lrt.offsetMax = new Vector2(-14, 0);
         label.raycastTarget = false;
 
         var toggle = rowGO.GetComponent<Toggle>();
@@ -269,40 +272,34 @@ public class SFXLabController : MonoBehaviour
     void BuildBottomBar(Transform root)
     {
         var barGO = MakeRect("BottomBar", root);
-        LayoutElem(barGO, minHeight: 280f);
+        LayoutElem(barGO, minHeight: H(170f));
         var barBg = barGO.AddComponent<Image>();
         barBg.sprite = whiteSprite;
         barBg.color = ColorPanelHeader;
 
         var vlg = barGO.AddComponent<VerticalLayoutGroup>();
-        vlg.padding = new RectOffset(20, 20, 14, 14);
-        vlg.spacing = 4f;
+        vlg.padding = new RectOffset(18, 18, Hi(14f), Hi(14f));
+        vlg.spacing = H(6f);
         vlg.childControlWidth = true;
         vlg.childControlHeight = true;
         vlg.childForceExpandWidth = true;
         vlg.childForceExpandHeight = false;
 
-        BuildSectionHeader(barGO.transform, "MODIFIERS");
+        BuildSectionHeader(barGO.transform, "SUSTAIN");
 
-        BuildModifierRow(barGO.transform, "VOLUME",  0f,   1f,  volume,         false,
-            FormatPercent,  v => { volume       = v; SFXManager.SetGlobalVolume(v); });
-        BuildModifierRow(barGO.transform, "PITCH",  -12f, 12f,  pitchSemitones, true,
-            FormatSemis,    v => pitchSemitones = v);
-        BuildModifierRow(barGO.transform, "FILTER",  0f,   1f,  filterAmount,   false,
-            FormatPercent,  v => filterAmount   = v);
-        BuildModifierRow(barGO.transform, "CRUSH",   0f,   1f,  bitCrushAmt,    false,
-            FormatPercent,  v => bitCrushAmt    = v);
-        BuildModifierRow(barGO.transform, "VIBRATO", 0f,   1f,  vibratoAmt,     false,
-            FormatPercent,  v => vibratoAmt     = v);
+        BuildModifierRow(barGO.transform, "VOLUME",  0f,    1f,  volume,      false,
+            FormatPercent, v => { volume = v; SFXManager.SetGlobalVolume(v); });
+        BuildModifierRow(barGO.transform, "RELEASE", 0.05f, 2f,  releaseTime, false,
+            FormatSeconds, v => releaseTime = v);
 
-        BuildSpacer(barGO.transform, 6f);
+        BuildSpacer(barGO.transform, 8f);
         BuildActionsRow(barGO.transform);
     }
 
     void BuildSectionHeader(Transform parent, string text)
     {
         var rowGO = MakeRect("SectionHeader", parent);
-        LayoutElem(rowGO, minHeight: 22f);
+        LayoutElem(rowGO, minHeight: H(18f));
 
         var hlg = rowGO.AddComponent<HorizontalLayoutGroup>();
         hlg.spacing = 10f;
@@ -312,10 +309,10 @@ public class SFXLabController : MonoBehaviour
         hlg.childForceExpandHeight = true;
         hlg.childAlignment = TextAnchor.MiddleLeft;
 
-        var lbl = Label(rowGO.transform, text, 13, TextAlignmentOptions.MidlineLeft, FontStyles.Bold);
+        var lbl = Label(rowGO.transform, text, 10, TextAlignmentOptions.MidlineLeft, FontStyles.Bold);
         lbl.color = new Color(1f, 1f, 1f, 0.55f);
-        lbl.characterSpacing = 8f;
-        LayoutElem(lbl.gameObject, minWidth: 120f);
+        lbl.characterSpacing = 15f;
+        LayoutElem(lbl.gameObject, minWidth: 100f);
         lbl.raycastTarget = false;
 
         var rule = MakeRect("Rule", rowGO.transform);
@@ -332,150 +329,32 @@ public class SFXLabController : MonoBehaviour
     void BuildSpacer(Transform parent, float height)
     {
         var go = MakeRect("Spacer", parent);
-        LayoutElem(go, minHeight: height);
+        LayoutElem(go, minHeight: H(height));
     }
 
     void BuildActionsRow(Transform parent)
     {
         var rowGO = MakeRect("Actions", parent);
-        LayoutElem(rowGO, minHeight: 56f);
+        LayoutElem(rowGO, minHeight: H(48f));
 
         var hlg = rowGO.AddComponent<HorizontalLayoutGroup>();
-        hlg.spacing = 10f;
+        hlg.spacing = 8f;
         hlg.childControlWidth = true;
         hlg.childControlHeight = true;
         hlg.childForceExpandWidth = false;
         hlg.childForceExpandHeight = true;
         hlg.childAlignment = TextAnchor.MiddleCenter;
 
-        var resetBtn = BuildButton(rowGO.transform, "RESET", 14, ColorWidget);
-        LayoutElem(resetBtn.gameObject, minWidth: 92f, minHeight: 52f);
-        resetBtn.onClick.AddListener(ResetModifiers);
-
-        var playBtn = BuildButton(rowGO.transform, "▶  PLAY", 20, ColorAccent);
-        LayoutElem(playBtn.gameObject, flexibleWidth: 1f, minWidth: 160f, minHeight: 52f);
+        var playBtn = BuildButton(rowGO.transform, "▶ PLAY", 15, ColorAccent);
+        LayoutElem(playBtn.gameObject, flexibleWidth: 1f, minWidth: 140f, minHeight: H(44f));
         playBtn.onClick.AddListener(Play);
 
         loopToggle = BuildLoopToggle(rowGO.transform);
-        LayoutElem(loopToggle.gameObject, minWidth: 56f, minHeight: 52f);
+        LayoutElem(loopToggle.gameObject, minWidth: 56f, minHeight: H(44f));
 
-        var stopBtn = BuildButton(rowGO.transform, "■", 18, ColorDanger);
-        LayoutElem(stopBtn.gameObject, minWidth: 56f, minHeight: 52f);
+        var stopBtn = BuildButton(rowGO.transform, "■ STOP", 15, ColorDanger);
+        LayoutElem(stopBtn.gameObject, minWidth: 96f, minHeight: H(44f));
         stopBtn.onClick.AddListener(Stop);
-    }
-
-    void BuildModifierRow(Transform parent, string label, float min, float max, float initial,
-                          bool wholeNumbers, Func<float, string> formatter, Action<float> onChange)
-    {
-        var rowGO = MakeRect("Mod_" + label, parent);
-        LayoutElem(rowGO, minHeight: 28f);
-        var hlg = rowGO.AddComponent<HorizontalLayoutGroup>();
-        hlg.spacing = 14f;
-        hlg.childControlWidth = true;
-        hlg.childControlHeight = true;
-        hlg.childForceExpandWidth = false;
-        hlg.childForceExpandHeight = true;
-        hlg.childAlignment = TextAnchor.MiddleLeft;
-
-        var lbl = Label(rowGO.transform, label, 15, TextAlignmentOptions.MidlineLeft, FontStyles.Bold);
-        lbl.color = new Color(1f, 1f, 1f, 0.78f);
-        lbl.characterSpacing = 6f;
-        LayoutElem(lbl.gameObject, minWidth: 100f);
-        lbl.raycastTarget = false;
-
-        var slider = BuildSlider(rowGO.transform, min, max, initial, wholeNumbers);
-        LayoutElem(slider.gameObject, flexibleWidth: 1f, minHeight: 24f);
-
-        var valueLabel = Label(rowGO.transform, formatter(initial), 16, TextAlignmentOptions.MidlineRight, FontStyles.Bold);
-        valueLabel.color = ColorAccent;
-        LayoutElem(valueLabel.gameObject, minWidth: 56f);
-        valueLabel.raycastTarget = false;
-
-        modSliders.Add((slider, initial));
-
-        slider.onValueChanged.AddListener(v =>
-        {
-            valueLabel.text = formatter(v);
-            onChange(v);
-        });
-    }
-
-    static string FormatPercent(float v) => Mathf.RoundToInt(v * 100f) + "%";
-    static string FormatSemis(float v)
-    {
-        int s = Mathf.RoundToInt(v);
-        return s > 0 ? "+" + s : s.ToString();
-    }
-
-    Slider BuildSlider(Transform parent, float min, float max, float initial, bool wholeNumbers)
-    {
-        var go = new GameObject("Slider", typeof(RectTransform), typeof(Image), typeof(Slider));
-        go.transform.SetParent(parent, false);
-        // Slim container as the touch target — kept transparent so the visible
-        // track is just the inner strip below.
-        var hitArea = go.GetComponent<Image>();
-        hitArea.color = new Color(0f, 0f, 0f, 0f);
-        hitArea.raycastTarget = true;
-
-        // Visual track: thin centered strip
-        var trackGO = MakeRect("Track", go.transform);
-        var trackRT = trackGO.GetComponent<RectTransform>();
-        trackRT.anchorMin = new Vector2(0f, 0.5f);
-        trackRT.anchorMax = new Vector2(1f, 0.5f);
-        trackRT.pivot = new Vector2(0.5f, 0.5f);
-        trackRT.sizeDelta = new Vector2(-20f, 4f);
-        var trackImg = trackGO.AddComponent<Image>();
-        trackImg.sprite = roundedSprite;
-        trackImg.type = Image.Type.Sliced;
-        trackImg.color = ColorWidget;
-        trackImg.raycastTarget = false;
-
-        var fillArea = MakeRect("Fill Area", trackGO.transform);
-        AnchorFill(fillArea.GetComponent<RectTransform>());
-
-        var fillGO = MakeRect("Fill", fillArea.transform);
-        var fillRT = fillGO.GetComponent<RectTransform>();
-        fillRT.anchorMin = Vector2.zero;
-        fillRT.anchorMax = Vector2.one;
-        fillRT.offsetMin = Vector2.zero;
-        fillRT.offsetMax = Vector2.zero;
-        var fillImg = fillGO.AddComponent<Image>();
-        fillImg.sprite = roundedSprite;
-        fillImg.type = Image.Type.Sliced;
-        fillImg.color = ColorAccent;
-        fillImg.raycastTarget = false;
-
-        var handleArea = MakeRect("Handle Slide Area", go.transform);
-        var haRT = handleArea.GetComponent<RectTransform>();
-        haRT.anchorMin = Vector2.zero;
-        haRT.anchorMax = Vector2.one;
-        haRT.offsetMin = new Vector2(10f, 0f);
-        haRT.offsetMax = new Vector2(-10f, 0f);
-
-        var handleGO = MakeRect("Handle", handleArea.transform);
-        var handleRT = handleGO.GetComponent<RectTransform>();
-        handleRT.sizeDelta = new Vector2(18f, 18f);
-        var handleImg = handleGO.AddComponent<Image>();
-        handleImg.sprite = circleSprite;
-        handleImg.type = Image.Type.Sliced;
-        handleImg.color = Color.white;
-
-        var slider = go.GetComponent<Slider>();
-        slider.targetGraphic = handleImg;
-        slider.fillRect = fillRT;
-        slider.handleRect = handleRT;
-        slider.direction = Slider.Direction.LeftToRight;
-        slider.minValue = min;
-        slider.maxValue = max;
-        slider.wholeNumbers = wholeNumbers;
-        slider.value = initial;
-        return slider;
-    }
-
-    void ResetModifiers()
-    {
-        for (int i = 0; i < modSliders.Count; i++)
-            modSliders[i].slider.value = modSliders[i].defaultValue;
     }
 
     Toggle BuildLoopToggle(Transform parent)
@@ -487,8 +366,8 @@ public class SFXLabController : MonoBehaviour
 
         var markGO = MakeRect("Check", go.transform);
         var mrt = markGO.GetComponent<RectTransform>();
-        mrt.anchorMin = new Vector2(0.2f, 0.2f);
-        mrt.anchorMax = new Vector2(0.8f, 0.8f);
+        mrt.anchorMin = new Vector2(0.18f, 0.18f);
+        mrt.anchorMax = new Vector2(0.82f, 0.82f);
         mrt.offsetMin = Vector2.zero;
         mrt.offsetMax = Vector2.zero;
         var markImg = markGO.AddComponent<Image>();
@@ -510,6 +389,110 @@ public class SFXLabController : MonoBehaviour
         return toggle;
     }
 
+    void BuildModifierRow(Transform parent, string label, float min, float max, float initial,
+                          bool wholeNumbers, Func<float, string> formatter, Action<float> onChange)
+    {
+        var rowGO = MakeRect("Mod_" + label, parent);
+        LayoutElem(rowGO, minHeight: H(26f));
+        var hlg = rowGO.AddComponent<HorizontalLayoutGroup>();
+        hlg.spacing = 12f;
+        hlg.childControlWidth = true;
+        hlg.childControlHeight = true;
+        hlg.childForceExpandWidth = false;
+        hlg.childForceExpandHeight = true;
+        hlg.childAlignment = TextAnchor.MiddleLeft;
+
+        var lbl = Label(rowGO.transform, label, 11, TextAlignmentOptions.MidlineLeft, FontStyles.Bold);
+        lbl.color = new Color(1f, 1f, 1f, 0.78f);
+        lbl.characterSpacing = 10f;
+        LayoutElem(lbl.gameObject, minWidth: 70f);
+        lbl.raycastTarget = false;
+
+        var slider = BuildSlider(rowGO.transform, min, max, initial, wholeNumbers);
+        LayoutElem(slider.gameObject, flexibleWidth: 1f, minHeight: H(24f));
+
+        var valueLabel = Label(rowGO.transform, formatter(initial), 12, TextAlignmentOptions.MidlineRight, FontStyles.Bold);
+        valueLabel.color = ColorAccent;
+        LayoutElem(valueLabel.gameObject, minWidth: 48f);
+        valueLabel.raycastTarget = false;
+
+        slider.onValueChanged.AddListener(v =>
+        {
+            valueLabel.text = formatter(v);
+            onChange(v);
+        });
+    }
+
+    static string FormatPercent(float v) => Mathf.RoundToInt(v * 100f) + "%";
+    static string FormatSeconds(float v) => v.ToString("0.00") + "s";
+
+    Slider BuildSlider(Transform parent, float min, float max, float initial, bool wholeNumbers)
+    {
+        var go = new GameObject("Slider", typeof(RectTransform), typeof(Image), typeof(Slider));
+        go.transform.SetParent(parent, false);
+        // Slim container as the touch target — kept transparent so the visible
+        // track is just the inner strip below.
+        var hitArea = go.GetComponent<Image>();
+        hitArea.color = new Color(0f, 0f, 0f, 0f);
+        hitArea.raycastTarget = true;
+
+        // Visual track: thin centered strip
+        var trackGO = MakeRect("Track", go.transform);
+        var trackRT = trackGO.GetComponent<RectTransform>();
+        trackRT.anchorMin = new Vector2(0f, 0.5f);
+        trackRT.anchorMax = new Vector2(1f, 0.5f);
+        trackRT.pivot = new Vector2(0.5f, 0.5f);
+        trackRT.sizeDelta = new Vector2(-20f, H(4f));
+        var trackImg = trackGO.AddComponent<Image>();
+        // Flat sprite at 4px tall — sliced rounding's borders overlap and stretch
+        // ugly at this height; rounding is invisible here anyway.
+        trackImg.sprite = whiteSprite;
+        trackImg.type = Image.Type.Simple;
+        trackImg.color = ColorWidget;
+        trackImg.raycastTarget = false;
+
+        var fillArea = MakeRect("Fill Area", trackGO.transform);
+        AnchorFill(fillArea.GetComponent<RectTransform>());
+
+        var fillGO = MakeRect("Fill", fillArea.transform);
+        var fillRT = fillGO.GetComponent<RectTransform>();
+        fillRT.anchorMin = Vector2.zero;
+        fillRT.anchorMax = Vector2.one;
+        fillRT.offsetMin = Vector2.zero;
+        fillRT.offsetMax = Vector2.zero;
+        var fillImg = fillGO.AddComponent<Image>();
+        fillImg.sprite = whiteSprite;
+        fillImg.type = Image.Type.Simple;
+        fillImg.color = ColorAccent;
+        fillImg.raycastTarget = false;
+
+        var handleArea = MakeRect("Handle Slide Area", go.transform);
+        var haRT = handleArea.GetComponent<RectTransform>();
+        haRT.anchorMin = Vector2.zero;
+        haRT.anchorMax = Vector2.one;
+        haRT.offsetMin = new Vector2(10f, 0f);
+        haRT.offsetMax = new Vector2(-10f, 0f);
+
+        var handleGO = MakeRect("Handle", handleArea.transform);
+        var handleRT = handleGO.GetComponent<RectTransform>();
+        handleRT.sizeDelta = new Vector2(H(16f), H(16f));
+        var handleImg = handleGO.AddComponent<Image>();
+        handleImg.sprite = circleSprite;
+        handleImg.type = Image.Type.Sliced;
+        handleImg.color = Color.white;
+
+        var slider = go.GetComponent<Slider>();
+        slider.targetGraphic = handleImg;
+        slider.fillRect = fillRT;
+        slider.handleRect = handleRT;
+        slider.direction = Slider.Direction.LeftToRight;
+        slider.minValue = min;
+        slider.maxValue = max;
+        slider.wholeNumbers = wholeNumbers;
+        slider.value = initial;
+        return slider;
+    }
+
     // ================================================================
     // Actions
     // ================================================================
@@ -519,60 +502,22 @@ public class SFXLabController : MonoBehaviour
         if (string.IsNullOrEmpty(selectedKey)) return;
         if (!presets.TryGetValue(selectedKey, out var tuples) || tuples == null || tuples.Length == 0) return;
 
-        var modified = new (WaveLayer, WaveEnvelope)[tuples.Length];
-        for (int i = 0; i < tuples.Length; i++)
-        {
-            var (layer, env) = tuples[i];
-            modified[i] = (layer, ApplyModifiers(env));
-        }
-        SFXManager.Instance.Emit(modified);
-    }
+        // Crossfade: release any currently-active sustained sound quickly so we
+        // don't stack two sustained emitters on top of each other.
+        if (activeEmitter != null)
+            SFXManager.Instance.ReleaseSustained(activeEmitter, 0.05f);
 
-    WaveEnvelope ApplyModifiers(WaveEnvelope src)
-    {
-        // Filter slider multiplies preset cutoff: 1 = preset, 0 = fully closed lowpass.
-        float cutoff = Mathf.Clamp01(src.filterCutoff * filterAmount);
-
-        // Bit crush slider lerps toward 1-bit: 0 = preset, 1 = full crunch.
-        float crush = Mathf.Lerp(src.bitCrush, 1f, bitCrushAmt);
-
-        // Vibrato: ensure a sensible LFO speed when the user adds vibrato to a
-        // preset that has none. Depth is additive on top of the preset.
-        float vibSpeed = src.vibratoSpeed > 0f ? src.vibratoSpeed : (vibratoAmt > 0.001f ? 8f : 0f);
-        float vibDepth = src.vibratoDepth + vibratoAmt * 80f;
-
-        var env = new WaveEnvelope(
-            intensity:       src.intensity,
-            pitchBend:       src.pitchBend,
-            decayRate:       src.decayRate,
-            attackRate:      src.attackRate,
-            vibratoSpeed:    vibSpeed,
-            vibratoDepth:    vibDepth,
-            tremoloSpeed:    src.tremoloSpeed,
-            tremoloDepth:    src.tremoloDepth,
-            dutyCycle:       src.dutyCycle,
-            harmonics:       src.harmonics,
-            filterCutoff:    cutoff,
-            filterResonance: src.filterResonance,
-            bitCrush:        crush,
-            fmAmount:        src.fmAmount,
-            fmRatio:         src.fmRatio,
-            pitchRandomness: src.pitchRandomness,
-            ampRandomness:   src.ampRandomness,
-            startDelay:      src.startDelay
-        );
-
-        // Pitch shift: actualFreq = audioBase(120) + env.freq, so an offset of
-        // audioBase * (2^(s/12) - 1) shifts the perceived pitch by s semitones.
-        const float audioBaseFreq = 120f;
-        env.freq = src.freq + audioBaseFreq * (Mathf.Pow(2f, pitchSemitones / 12f) - 1f);
-        return env;
+        activeEmitter = SFXManager.Instance.EmitSustained(tuples);
     }
 
     public void Stop()
     {
         if (loopToggle != null) loopToggle.isOn = false;
-        SFXManager.Instance.StopAll(0.08f);
+        if (activeEmitter != null)
+        {
+            SFXManager.Instance.ReleaseSustained(activeEmitter, releaseTime);
+            activeEmitter = null;
+        }
     }
 
     // ================================================================
