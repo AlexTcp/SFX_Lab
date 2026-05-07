@@ -26,11 +26,6 @@ public class SFXLabController : MonoBehaviour
     const int CircleSpriteSize    = 64;
     const float LoopIntervalSeconds = 0.5f;
 
-    // ===== Tunables =====
-    // Single multiplier applied to every UI vertical dimension (row heights,
-    // padding, spacing, slider tracks, handles, etc). 1 = HTML mockup spec.
-    [SerializeField] float uiScale = 1f;
-
     // ===== Runtime state =====
     Dictionary<string, (WaveLayer, WaveEnvelope)[]> presets;
     List<string> presetKeys;
@@ -42,13 +37,9 @@ public class SFXLabController : MonoBehaviour
     const float DefaultVolume      = 0.8f;
     const float DefaultReleaseTime = 0.5f;
 
-    float volume       = DefaultVolume;
     float releaseTime  = DefaultReleaseTime;
 
     SFXEmitter activeEmitter;
-
-    float H(float h)  => h * uiScale;
-    int   Hi(float h) => Mathf.RoundToInt(h * uiScale);
 
     Sprite whiteSprite;
     Sprite roundedSprite;
@@ -130,10 +121,10 @@ public class SFXLabController : MonoBehaviour
         canvas.renderMode = RenderMode.ScreenSpaceOverlay;
         var scaler = canvasGO.GetComponent<CanvasScaler>();
         scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-        // Canvas reference matches the HTML mockup's phone-pixel space
-        // (380 wide), so HTML px values translate 1:1 to source units.
+        // 380x800 matches the HTML mockup's phone-pixel space; match=0.5
+        // keeps things sane even if the Editor Game view is landscape.
         scaler.referenceResolution = new Vector2(380, 800);
-        scaler.matchWidthOrHeight = 0f;
+        scaler.matchWidthOrHeight = 0.5f;
 
         var rootGO = MakeRect("Root", canvasGO.transform);
         var rootRT = rootGO.GetComponent<RectTransform>();
@@ -155,7 +146,7 @@ public class SFXLabController : MonoBehaviour
     void BuildPresetList(Transform root)
     {
         var scrollGO = MakeRect("Scroll", root);
-        LayoutElem(scrollGO, flexibleHeight: 1f, minHeight: H(400f));
+        LayoutElem(scrollGO, flexibleHeight: 1f, minHeight: 400f);
         var scrollBg = scrollGO.AddComponent<Image>();
         scrollBg.sprite = whiteSprite;
         scrollBg.color = ColorBg;
@@ -197,7 +188,7 @@ public class SFXLabController : MonoBehaviour
     {
         var rowGO = new GameObject("PresetRow", typeof(RectTransform), typeof(Image), typeof(Toggle));
         rowGO.transform.SetParent(parent, false);
-        LayoutElem(rowGO, minHeight: H(44f));
+        LayoutElem(rowGO, minHeight: 44f, preferredHeight: 44f, flexibleHeight: 0f);
 
         var bg = rowGO.GetComponent<Image>();
         StyleBg(bg, ColorWidget);
@@ -208,7 +199,7 @@ public class SFXLabController : MonoBehaviour
         ringRT.anchorMin = new Vector2(0, 0.5f);
         ringRT.anchorMax = new Vector2(0, 0.5f);
         ringRT.pivot = new Vector2(0, 0.5f);
-        ringRT.sizeDelta = new Vector2(H(16f), H(16f));
+        ringRT.sizeDelta = new Vector2(16f, 16f);
         ringRT.anchoredPosition = new Vector2(14, 0);
         var ringImg = ringGO.AddComponent<Image>();
         ringImg.sprite = circleSprite;
@@ -272,70 +263,36 @@ public class SFXLabController : MonoBehaviour
     void BuildBottomBar(Transform root)
     {
         var barGO = MakeRect("BottomBar", root);
-        LayoutElem(barGO, minHeight: H(170f));
+        LayoutElem(barGO, minHeight: 110f, preferredHeight: 110f, flexibleHeight: 0f);
         var barBg = barGO.AddComponent<Image>();
         barBg.sprite = whiteSprite;
         barBg.color = ColorPanelHeader;
 
         var vlg = barGO.AddComponent<VerticalLayoutGroup>();
-        vlg.padding = new RectOffset(18, 18, Hi(14f), Hi(14f));
-        vlg.spacing = H(6f);
+        vlg.padding = new RectOffset(18, 18, 14, 14);
+        vlg.spacing = 6f;
         vlg.childControlWidth = true;
         vlg.childControlHeight = true;
         vlg.childForceExpandWidth = true;
         vlg.childForceExpandHeight = false;
 
-        BuildSectionHeader(barGO.transform, "SUSTAIN");
-
-        BuildModifierRow(barGO.transform, "VOLUME",  0f,    1f,  volume,      false,
-            FormatPercent, v => { volume = v; SFXManager.SetGlobalVolume(v); });
-        BuildModifierRow(barGO.transform, "RELEASE", 0.05f, 2f,  releaseTime, false,
+        BuildModifierRow(barGO.transform, "RELEASE", 0.05f, 2f, releaseTime, false,
             FormatSeconds, v => releaseTime = v);
 
         BuildSpacer(barGO.transform, 8f);
         BuildActionsRow(barGO.transform);
     }
 
-    void BuildSectionHeader(Transform parent, string text)
-    {
-        var rowGO = MakeRect("SectionHeader", parent);
-        LayoutElem(rowGO, minHeight: H(18f));
-
-        var hlg = rowGO.AddComponent<HorizontalLayoutGroup>();
-        hlg.spacing = 10f;
-        hlg.childControlWidth = true;
-        hlg.childControlHeight = true;
-        hlg.childForceExpandWidth = false;
-        hlg.childForceExpandHeight = true;
-        hlg.childAlignment = TextAnchor.MiddleLeft;
-
-        var lbl = Label(rowGO.transform, text, 10, TextAlignmentOptions.MidlineLeft, FontStyles.Bold);
-        lbl.color = new Color(1f, 1f, 1f, 0.55f);
-        lbl.characterSpacing = 15f;
-        LayoutElem(lbl.gameObject, minWidth: 100f);
-        lbl.raycastTarget = false;
-
-        var rule = MakeRect("Rule", rowGO.transform);
-        LayoutElem(rule, flexibleWidth: 1f, minHeight: 1f);
-        var ruleRT = rule.GetComponent<RectTransform>();
-        ruleRT.anchorMin = new Vector2(0, 0.5f);
-        ruleRT.anchorMax = new Vector2(1, 0.5f);
-        var ruleImg = rule.AddComponent<Image>();
-        ruleImg.sprite = whiteSprite;
-        ruleImg.color = new Color(1f, 1f, 1f, 0.08f);
-        ruleImg.raycastTarget = false;
-    }
-
     void BuildSpacer(Transform parent, float height)
     {
         var go = MakeRect("Spacer", parent);
-        LayoutElem(go, minHeight: H(height));
+        LayoutElem(go, minHeight: height, preferredHeight: height, flexibleHeight: 0f);
     }
 
     void BuildActionsRow(Transform parent)
     {
         var rowGO = MakeRect("Actions", parent);
-        LayoutElem(rowGO, minHeight: H(48f));
+        LayoutElem(rowGO, minHeight: 48f, preferredHeight: 48f, flexibleHeight: 0f);
 
         var hlg = rowGO.AddComponent<HorizontalLayoutGroup>();
         hlg.spacing = 8f;
@@ -346,14 +303,17 @@ public class SFXLabController : MonoBehaviour
         hlg.childAlignment = TextAnchor.MiddleCenter;
 
         var playBtn = BuildButton(rowGO.transform, "▶ PLAY", 15, ColorAccent);
-        LayoutElem(playBtn.gameObject, flexibleWidth: 1f, minWidth: 140f, minHeight: H(44f));
+        LayoutElem(playBtn.gameObject, flexibleWidth: 1f, minWidth: 140f,
+            minHeight: 44f, preferredHeight: 44f);
         playBtn.onClick.AddListener(Play);
 
         loopToggle = BuildLoopToggle(rowGO.transform);
-        LayoutElem(loopToggle.gameObject, minWidth: 56f, minHeight: H(44f));
+        LayoutElem(loopToggle.gameObject, minWidth: 56f,
+            minHeight: 44f, preferredHeight: 44f);
 
         var stopBtn = BuildButton(rowGO.transform, "■ STOP", 15, ColorDanger);
-        LayoutElem(stopBtn.gameObject, minWidth: 96f, minHeight: H(44f));
+        LayoutElem(stopBtn.gameObject, minWidth: 96f,
+            minHeight: 44f, preferredHeight: 44f);
         stopBtn.onClick.AddListener(Stop);
     }
 
@@ -393,7 +353,7 @@ public class SFXLabController : MonoBehaviour
                           bool wholeNumbers, Func<float, string> formatter, Action<float> onChange)
     {
         var rowGO = MakeRect("Mod_" + label, parent);
-        LayoutElem(rowGO, minHeight: H(26f));
+        LayoutElem(rowGO, minHeight: 26f, preferredHeight: 26f, flexibleHeight: 0f);
         var hlg = rowGO.AddComponent<HorizontalLayoutGroup>();
         hlg.spacing = 12f;
         hlg.childControlWidth = true;
@@ -409,7 +369,8 @@ public class SFXLabController : MonoBehaviour
         lbl.raycastTarget = false;
 
         var slider = BuildSlider(rowGO.transform, min, max, initial, wholeNumbers);
-        LayoutElem(slider.gameObject, flexibleWidth: 1f, minHeight: H(24f));
+        LayoutElem(slider.gameObject, flexibleWidth: 1f,
+            minHeight: 24f, preferredHeight: 24f, flexibleHeight: 0f);
 
         var valueLabel = Label(rowGO.transform, formatter(initial), 12, TextAlignmentOptions.MidlineRight, FontStyles.Bold);
         valueLabel.color = ColorAccent;
@@ -423,7 +384,6 @@ public class SFXLabController : MonoBehaviour
         });
     }
 
-    static string FormatPercent(float v) => Mathf.RoundToInt(v * 100f) + "%";
     static string FormatSeconds(float v) => v.ToString("0.00") + "s";
 
     Slider BuildSlider(Transform parent, float min, float max, float initial, bool wholeNumbers)
@@ -442,7 +402,7 @@ public class SFXLabController : MonoBehaviour
         trackRT.anchorMin = new Vector2(0f, 0.5f);
         trackRT.anchorMax = new Vector2(1f, 0.5f);
         trackRT.pivot = new Vector2(0.5f, 0.5f);
-        trackRT.sizeDelta = new Vector2(-20f, H(4f));
+        trackRT.sizeDelta = new Vector2(-20f, 4f);
         var trackImg = trackGO.AddComponent<Image>();
         // Flat sprite at 4px tall — sliced rounding's borders overlap and stretch
         // ugly at this height; rounding is invisible here anyway.
@@ -475,7 +435,7 @@ public class SFXLabController : MonoBehaviour
 
         var handleGO = MakeRect("Handle", handleArea.transform);
         var handleRT = handleGO.GetComponent<RectTransform>();
-        handleRT.sizeDelta = new Vector2(H(16f), H(16f));
+        handleRT.sizeDelta = new Vector2(16f, 16f);
         var handleImg = handleGO.AddComponent<Image>();
         handleImg.sprite = circleSprite;
         handleImg.type = Image.Type.Sliced;
@@ -589,13 +549,18 @@ public class SFXLabController : MonoBehaviour
         rt.offsetMax = Vector2.zero;
     }
 
-    static LayoutElement LayoutElem(GameObject go, float minWidth = -1, float minHeight = -1, float flexibleWidth = -1, float flexibleHeight = -1)
+    static LayoutElement LayoutElem(GameObject go,
+        float minWidth = -1, float minHeight = -1,
+        float preferredWidth = -1, float preferredHeight = -1,
+        float flexibleWidth = -1, float flexibleHeight = -1)
     {
         var le = go.GetComponent<LayoutElement>() ?? go.AddComponent<LayoutElement>();
-        if (minWidth       >= 0) le.minWidth       = minWidth;
-        if (minHeight      >= 0) le.minHeight      = minHeight;
-        if (flexibleWidth  >= 0) le.flexibleWidth  = flexibleWidth;
-        if (flexibleHeight >= 0) le.flexibleHeight = flexibleHeight;
+        if (minWidth        >= 0) le.minWidth        = minWidth;
+        if (minHeight       >= 0) le.minHeight       = minHeight;
+        if (preferredWidth  >= 0) le.preferredWidth  = preferredWidth;
+        if (preferredHeight >= 0) le.preferredHeight = preferredHeight;
+        if (flexibleWidth   >= 0) le.flexibleWidth   = flexibleWidth;
+        if (flexibleHeight  >= 0) le.flexibleHeight  = flexibleHeight;
         return le;
     }
 
@@ -631,7 +596,7 @@ public class SFXLabController : MonoBehaviour
         trt.offsetMin = new Vector2(12, 4);
         trt.offsetMax = new Vector2(-12, -4);
         t.enableAutoSizing = true;
-        t.fontSizeMin = Mathf.Max(12f, fontSize * 0.55f);
+        t.fontSizeMin = fontSize * 0.55f;
         t.fontSizeMax = fontSize;
         t.overflowMode = TextOverflowModes.Ellipsis;
         t.raycastTarget = false;
