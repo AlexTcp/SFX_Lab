@@ -9,6 +9,16 @@
 [Mm]emoryCaptures/
 UserSettings/
 
+# IL2CPP build backup (folder name literally says "don't ship it")
+*_BackUpThisFolder_ButDontShipItWithYourGame/
+
+# Unity build temp output
+.utmp/
+
+# Claude Code local overrides
+.claude/settings.local.json
+.claude/.credentials.json
+
 # Avoid ignoring ProjectSettings/ entirely — Unity needs most of it.
 # If using Rider, VS, VSCode plugins:
 JetBrains/
